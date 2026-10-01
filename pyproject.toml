@@ -1,0 +1,19 @@
+[project]
+name = "muxherd"
+version = "0.1.0"
+description = "Herd AI coding agents (Claude Code, Codex, Grok) running in tmux across your tailnet"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Keith Gaputis", email = "keith@gaputis.com" }]
+dependencies = [
+    "textual>=8.0",
+    "typer>=0.15",
+]
+
+[project.scripts]
+muxherd = "muxherd.cli:main"
+mh = "muxherd.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

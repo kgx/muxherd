@@ -1,0 +1,202 @@
+"""muxherd command line."""
+
+from __future__ import annotations
+
+import os
+import time
+from typing import Annotated, Optional
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from . import __version__, config, tmux
+from .tmux import Host, HostError, Session
+
+app = typer.Typer(
+    help="Herd AI coding agents running in tmux across your tailnet. Run with no command for the picker.",
+    no_args_is_help=False,
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+console = Console()
+err = Console(stderr=True)
+
+
+def _hosts(cfg: config.Config, only: str | None = None) -> list[Host]:
+    hosts = [Host(n, t) for n, t in cfg.hosts.items()]
+    if only:
+        hosts = [h for h in hosts if h.name == only]
+        if not hosts:
+            err.print(f"[red]unknown host {only!r}[/red] (configured: {', '.join(cfg.hosts)})")
+            raise typer.Exit(2)
+    return hosts
+
+
+def _report_errors(errors: dict[str, str]) -> None:
+    for msg in errors.values():
+        err.print(f"[yellow]warning:[/yellow] {msg}")
+
+
+def _pick(initial_filter: str = "") -> None:
+    from .tui import MuxherdApp
+
+    cfg = config.load()
+    session = MuxherdApp(cfg, initial_filter).run()
+    if session is not None:
+        tmux.attach(session, cfg.attach)
+
+
+def _find(query: str, cfg: config.Config) -> tuple[list[Session], dict[str, str]]:
+    """Resolve 'name' or 'host:name' — exact matches first, then substring."""
+    host_name, _, name = query.rpartition(":")
+    sessions, errors = tmux.list_all(_hosts(cfg, host_name or None))
+    exact = [s for s in sessions if s.name == name]
+    if exact:
+        return exact, errors
+    return [s for s in sessions if name.lower() in s.name.lower()], errors
+
+
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: typer.Context,
+    version: Annotated[bool, typer.Option("--version", "-V", help="Show version.")] = False,
+) -> None:
+    if version:
+        console.print(f"muxherd {__version__}")
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        _pick()
+
+
+@app.command("ls")
+def ls(host: Annotated[Optional[str], typer.Option("--host", "-H", help="Only this host.")] = None) -> None:
+    """List sessions on all configured hosts."""
+    cfg = config.load()
+    sessions, errors = tmux.list_all(_hosts(cfg, host))
+    _report_errors(errors)
+    if not sessions:
+        console.print("[dim]no sessions[/dim]")
+        return
+    now = time.time()
+    table = Table(box=None, pad_edge=False, header_style="dim")
+    for col in ("", "host", "session", "agent", "idle", "dir"):
+        table.add_column(col)
+    for s in sessions:
+        table.add_row(
+            "[green]●[/green]" if s.attached else "[dim]○[/dim]",
+            f"[cyan]{s.host.name}[/cyan]",
+            f"[bold]{s.name}[/bold]",
+            s.agent,
+            tmux.ago(s.activity, now),
+            f"[dim]{tmux.short_path(s.path)}[/dim]",
+        )
+    console.print(table)
+
+
+@app.command("a", hidden=True)
+@app.command("attach")
+def attach(query: Annotated[str, typer.Argument(help="Session name, 'host:name', or part of a name.")]) -> None:
+    """Attach to a session (opens the picker if the query is ambiguous)."""
+    cfg = config.load()
+    found, errors = _find(query, cfg)
+    _report_errors(errors)
+    if len(found) == 1:
+        tmux.attach(found[0], cfg.attach)
+    _pick(query.rpartition(":")[2])
+
+
+@app.command("new")
+def new(
+    name: Annotated[Optional[str], typer.Argument(help="Session name (default: <agent>-<dir>).")] = None,
+    agent: Annotated[str, typer.Option("--agent", "-a", help="Agent to launch (see config [agents]).")] = "claude",
+    host: Annotated[Optional[str], typer.Option("--host", "-H", help="Host to run on (default: first configured).")] = None,
+    directory: Annotated[Optional[str], typer.Option("--dir", "-d", help="Working directory (default: cwd locally, ~ remotely).")] = None,
+    detach: Annotated[bool, typer.Option("--detach", "-D", help="Create without attaching.")] = False,
+) -> None:
+    """Start an agent in a new tmux session."""
+    cfg = config.load()
+    if agent not in cfg.agents:
+        err.print(f"[red]unknown agent {agent!r}[/red] (configured: {', '.join(cfg.agents)})")
+        raise typer.Exit(2)
+    h = _hosts(cfg, host)[0]
+    directory = directory or (os.getcwd() if h.is_local else "~")
+    if name is None:
+        from .tui import unique_name
+
+        taken = {s.name for s in tmux.list_sessions(h)}
+        name = unique_name(f"{agent}-{os.path.basename(directory.rstrip('/'))}", taken)
+    try:
+        name = tmux.new_session(h, name, agent, cfg.agents[agent], directory)
+    except HostError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"started [cyan]{h.name}[/cyan]:[bold]{name}[/bold] ({agent})")
+    if not detach:
+        tmux.attach(Session(h, name, 0, 0, 0, 1, agent, directory), cfg.attach)
+
+
+@app.command("kill")
+def kill(
+    query: Annotated[str, typer.Argument(help="Session name or 'host:name'.")],
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Don't ask for confirmation.")] = False,
+) -> None:
+    """Kill a session."""
+    cfg = config.load()
+    host_name, _, name = query.rpartition(":")
+    sessions, errors = tmux.list_all(_hosts(cfg, host_name or None))
+    _report_errors(errors)
+    found = [s for s in sessions if s.name == name]
+    if not found:
+        err.print(f"[red]no session named {query!r}[/red]")
+        raise typer.Exit(1)
+    if len(found) > 1:
+        err.print(f"[red]ambiguous:[/red] {', '.join(s.key for s in found)} — use host:name")
+        raise typer.Exit(1)
+    s = found[0]
+    if not yes and not typer.confirm(f"kill {s.key}?"):
+        raise typer.Exit(1)
+    tmux.kill_session(s)
+    console.print(f"killed {s.key}")
+
+
+@app.command("init")
+def init(
+    remote: Annotated[
+        Optional[list[str]],
+        typer.Option("--remote", "-r", help="Remote host as NAME or NAME=SSH_TARGET. Repeatable."),
+    ] = None,
+    no_local: Annotated[bool, typer.Option("--no-local", help="Don't include this machine.")] = False,
+    force: Annotated[bool, typer.Option("--force", "-f", help="Overwrite an existing config.")] = False,
+) -> None:
+    """Write a starter config to ~/.config/muxherd/config.toml."""
+    path = config.CONFIG_PATH
+    if path.exists() and not force:
+        err.print(f"[yellow]{path} already exists[/yellow] (use --force to overwrite)")
+        raise typer.Exit(1)
+    hosts: dict[str, str] = {}
+    if not no_local:
+        hosts[config.local_hostname()] = "local"
+    for r in remote or []:
+        name, _, target = r.partition("=")
+        hosts[name] = target or name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(config.render(hosts))
+    console.print(f"wrote {path}")
+
+
+@app.command("hosts")
+def hosts() -> None:
+    """Check that each configured host is reachable."""
+    cfg = config.load()
+    console.print(f"[dim]config: {config.CONFIG_PATH}{'' if config.CONFIG_PATH.exists() else ' (missing, using defaults)'}[/dim]")
+    for h in _hosts(cfg):
+        try:
+            n = len(tmux.list_sessions(h))
+            console.print(f"[green]✓[/green] [cyan]{h.name}[/cyan] ({h.target}) — {n} sessions")
+        except HostError as e:
+            console.print(f"[red]✗[/red] [cyan]{h.name}[/cyan] ({h.target}) — {e}")
+
+
+def main() -> None:
+    app()

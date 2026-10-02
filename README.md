@@ -92,6 +92,7 @@ mh new api -a claude -H excelsior -d ~/develop/api -D   # create detached on a h
 mh ls                    # list everything, closed sessions marked ✕ (--live to hide them)
 mh kill excelsior:api    # kill (asks first; -y to skip); it stays listed as closed
 mh forget api            # remove a closed session from the registry
+mh rename api api-v2     # rename (live or closed; host:name works too)
 mh hosts                 # reachability check
 ```
 
@@ -102,13 +103,20 @@ mh hosts                 # reachability check
 | type           | filter (space-separated terms match host, name, agent, dir) |
 | ↑ ↓ PgUp PgDn  | move                                                       |
 | ⏎              | attach, or reopen a closed session                         |
-| ctrl+n         | new session (agent, host, directory, name)                 |
+| ctrl+n         | new session (agent, host, directory, name); see below      |
+| ctrl+r         | rename the selected session (live or closed)               |
 | ctrl+x         | kill a live session / forget a closed one (with confirm)   |
 | ctrl+t         | show/hide closed sessions                                  |
 | ctrl+e         | open the session's directory in your editor                |
 | ctrl+p         | toggle preview pane                                        |
-| ctrl+r         | refresh now                                                |
+| F5             | refresh now (it also refreshes every 2s)                   |
 | esc            | clear filter, then quit                                    |
+
+In the new-session dialog, the directory field browses the chosen host, over ssh for
+remote hosts. It starts out listing directories you've recently used there. As you type,
+it lists matching subdirectories. **↑↓** pick one, **Tab** (or **→** at the end of the
+line) steps into it, **Enter** on a picked entry takes it, and Enter again creates the
+session. Hidden folders appear once you type a leading `.`.
 
 How attach works:
 - **Local session, run outside tmux:** `tmux attach`.

@@ -11,7 +11,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Input, Label, Select, Static
+from textual.widgets import DataTable, Footer, Input, Label, OptionList, Select, Static
 from textual.worker import get_current_worker
 
 from . import editor, tmux
@@ -46,6 +46,7 @@ class FilterInput(Input):
         Binding("enter", "app.attach", "attach"),
         Binding("ctrl+x", "app.kill", "kill/forget"),
         Binding("ctrl+e", "app.edit", "editor"),
+        Binding("ctrl+r", "app.rename", "rename"),
         Binding("escape", "app.escape", "clear/quit"),
     ]
 
@@ -75,15 +76,38 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(value)
 
 
+class DirInput(Input):
+    """Directory field: arrows move through the suggestions, tab steps into one."""
+
+    BINDINGS = [
+        Binding("down", "screen.suggest_move(1)", show=False),
+        Binding("up", "screen.suggest_move(-1)", show=False),
+        Binding("tab", "screen.suggest_accept", show=False),
+        Binding("right", "screen.suggest_accept_at_end", show=False),
+    ]
+
+
 class NewSessionScreen(ModalScreen[dict | None]):
     BINDINGS = [Binding("escape", "cancel", "cancel")]
 
-    def __init__(self, config: Config, hosts: list[Host], default_host: str, spec: dict | None = None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        hosts: list[Host],
+        default_host: str,
+        spec: dict | None = None,
+        recent_dirs: dict[str, list[str]] | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
         self.hosts = hosts
         self.default_host = spec["host"] if spec else default_host
+        self.current_host = self.default_host
         self.spec = spec  # previous values when reopened to fix a typo
+        self.recent_dirs = recent_dirs or {}
+        self.suggestions: list[str] = []
+        self.picked = False  # user moved into the suggestion list with the arrows
+        self.set_value: str | None = None  # dir value we set ourselves (Changed for it isn't typing)
 
     def compose(self) -> ComposeResult:
         agents = list(self.config.agents)
@@ -94,14 +118,27 @@ class NewSessionScreen(ModalScreen[dict | None]):
             yield Select([(a, a) for a in agents], value=agent, allow_blank=False, compact=True, id="agent")
             yield Label("host")
             yield Select([(h.name, h.name) for h in self.hosts], value=self.default_host, allow_blank=False, compact=True, id="host")
-            yield Label("directory")
-            yield Input(self.spec["dir"] if self.spec else self._default_dir(self.default_host), compact=True, id="dir")
+            yield Label("directory", id="dir-label")
+            self.set_value = self.spec["dir"] if self.spec else self._default_dir(self.default_host)
+            yield DirInput(self.set_value, compact=True, id="dir")
+            suggest = OptionList(id="suggest", compact=True)
+            suggest.can_focus = False
+            yield suggest
             yield Label("name")
             yield Input(self.spec["name"] if self.spec else "", placeholder="auto: <agent>-<dir>", compact=True, id="name")
-            yield Label("[b]enter[/b] create & attach   [b]tab[/b] next field   [b]esc[/b] cancel", classes="hint")
+            yield Label(
+                "[b]enter[/b] create & attach   [b]↑↓[/b] pick dir   [b]tab[/b] open dir   [b]esc[/b] cancel",
+                classes="hint",
+            )
 
     def on_mount(self) -> None:
         self.query_one("#dir", Input).focus()
+        self._show_recent()
+
+    @property
+    def host(self) -> Host:
+        name = str(self.query_one("#host", Select).value)
+        return next(h for h in self.hosts if h.name == name)
 
     def _default_dir(self, host_name: str) -> str:
         host = next(h for h in self.hosts if h.name == host_name)
@@ -109,20 +146,136 @@ class NewSessionScreen(ModalScreen[dict | None]):
 
     @on(Select.Changed, "#host")
     def host_changed(self, event: Select.Changed) -> None:
-        if self.spec and str(event.value) == self.spec["host"]:
-            return  # initial value when reopened; keep the user's directory
-        self.query_one("#dir", Input).value = self._default_dir(str(event.value))
+        # Select can report its initial value late (after the user started typing);
+        # only an actual host switch should reset the directory.
+        if str(event.value) == self.current_host:
+            return
+        self.current_host = str(event.value)
+        self.set_value = self._default_dir(str(event.value))
+        self.query_one("#dir", Input).value = self.set_value
+        self._show_recent()
+
+    # ----- directory suggestions -----
+
+    def _show_recent(self) -> None:
+        recent = self.recent_dirs.get(self.host.name, [])
+        self._set_suggestions(recent, "recent directories on " + self.host.name if recent else "")
+        if not recent:
+            self._complete(self.query_one("#dir", Input).value)
+
+    def _set_suggestions(self, paths: list[str], label: str = "") -> None:
+        self.suggestions = paths
+        self.picked = False
+        ol = self.query_one("#suggest", OptionList)
+        ol.clear_options()
+        ol.add_options(paths)
+        ol.display = bool(paths)
+        ol.highlighted = None
+        self.query_one("#dir-label", Label).update(f"directory  [dim]{label}[/dim]" if label else "directory")
+
+    @on(Input.Changed, "#dir")
+    def dir_changed(self, event: Input.Changed) -> None:
+        if event.value == self.set_value:
+            return  # our own default, keep showing recent dirs
+        self.set_value = None
+        self._complete(event.value)
+
+    @work(thread=True, exclusive=True, group="dirs")
+    def _complete(self, value: str) -> None:
+        # "~/develop/he" -> list "~/develop", keep entries starting with "he"
+        parent, _, prefix = value.rpartition("/")
+        if not value.startswith(("/", "~")):
+            parent, prefix = "~", value
+        elif not parent and value.startswith("/"):
+            parent = "/"
+        try:
+            names = tmux.list_dirs(self.host, parent or "/")
+        except HostError:
+            names = []
+        show_hidden = prefix.startswith(".")
+        base = parent.rstrip("/") if parent != "/" else ""
+        matches = [
+            f"{base}/{n}" for n in names
+            if n.lower().startswith(prefix.lower()) and (show_hidden or not n.startswith("."))
+        ]
+        if not get_current_worker().is_cancelled:
+            self.app.call_from_thread(self._set_suggestions, matches[:50])
+
+    def action_suggest_move(self, delta: int) -> None:
+        ol = self.query_one("#suggest", OptionList)
+        if not self.suggestions:
+            return
+        if ol.highlighted is None:
+            ol.highlighted = 0 if delta > 0 else len(self.suggestions) - 1
+        else:
+            ol.highlighted = max(0, min(len(self.suggestions) - 1, ol.highlighted + delta))
+        ol.scroll_to_highlight()
+        self.picked = True
+
+    def _accept(self) -> bool:
+        """Put the highlighted (or only) suggestion into the field and list its children."""
+        ol = self.query_one("#suggest", OptionList)
+        idx = ol.highlighted
+        if idx is None and len(self.suggestions) == 1:
+            idx = 0
+        if idx is None:
+            return False
+        dir_input = self.query_one("#dir", Input)
+        dir_input.value = self.suggestions[idx].rstrip("/") + "/"
+        dir_input.cursor_position = len(dir_input.value)
+        return True
+
+    def action_suggest_accept(self) -> None:
+        if not self._accept():
+            self.focus_next()
+
+    def action_suggest_accept_at_end(self) -> None:
+        dir_input = self.query_one("#dir", Input)
+        if dir_input.cursor_position < len(dir_input.value) or not self._accept():
+            dir_input.action_cursor_right()
+
+    @on(OptionList.OptionSelected, "#suggest")
+    def suggestion_clicked(self, event: OptionList.OptionSelected) -> None:
+        self.query_one("#suggest", OptionList).highlighted = event.option_index
+        self._accept()
+        self.query_one("#dir", Input).focus()
+
+    # ----- submit -----
 
     @on(Input.Submitted)
-    def submit(self) -> None:
+    def submit(self, event: Input.Submitted) -> None:
+        if event.input.id == "dir" and self.picked and self._accept():
+            return  # enter on a picked suggestion takes it; enter again creates
         self.dismiss(
             {
                 "agent": str(self.query_one("#agent", Select).value),
                 "host": str(self.query_one("#host", Select).value),
-                "dir": self.query_one("#dir", Input).value.strip() or "~",
+                "dir": self.query_one("#dir", Input).value.strip().rstrip("/") or "~",
                 "name": self.query_one("#name", Input).value.strip(),
             }
         )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class RenameScreen(ModalScreen[str | None]):
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, session: Session) -> None:
+        super().__init__()
+        self.session = session
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label(f"[b]Rename[/b] {self.session.key}", classes="title")
+            yield Label("new name")
+            yield Input(self.session.name, compact=True, id="name")
+            yield Label("[b]enter[/b] rename   [b]esc[/b] cancel", classes="hint")
+
+    @on(Input.Submitted)
+    def submit(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip() or None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -143,12 +296,13 @@ class MuxherdApp(App[Session | None]):
     .dialog Label { margin-top: 1; color: $text-muted; }
     .dialog .title { margin-top: 0; color: $text; }
     .dialog .hint { color: $text-muted; }
-    ConfirmScreen, NewSessionScreen { align: center middle; }
+    ConfirmScreen, NewSessionScreen, RenameScreen { align: center middle; }
+    #suggest { height: auto; max-height: 8; margin-top: 0; background: $boost; }
     """
     BINDINGS = [
         Binding("ctrl+n", "new", "new"),
         Binding("ctrl+t", "toggle_closed", "closed"),
-        Binding("ctrl+r", "refresh", "refresh"),
+        Binding("f5", "refresh", "refresh", show=False),
         Binding("ctrl+p", "toggle_preview", "preview"),
         Binding("escape", "escape", "quit", show=False),
         Binding("ctrl+c", "quit", show=False, priority=True),
@@ -164,6 +318,7 @@ class MuxherdApp(App[Session | None]):
         self.errors: dict[str, str] = {}
         self.loaded = False
         self.show_closed = True
+        self.focus_key: str | None = None  # select this row on the next render (e.g. after rename)
         self.initial_filter = initial_filter
 
     def compose(self) -> ComposeResult:
@@ -206,7 +361,7 @@ class MuxherdApp(App[Session | None]):
 
     def _render_table(self) -> None:
         table = self.query_one(DataTable)
-        current = self.selected.key if self.selected else None
+        current = self.focus_key or (self.selected.key if self.selected else None)
         query = self.query_one(FilterInput).value
         self.shown = [s for s in self.sessions if (s.live or self.show_closed) and matches(s, query)]
         now = time.time()
@@ -233,6 +388,7 @@ class MuxherdApp(App[Session | None]):
             table.add_row(*row, key=s.key)
         keys = [s.key for s in self.shown]
         if current in keys:
+            self.focus_key = None
             table.move_cursor(row=keys.index(current), animate=False)
         elif self.shown:
             table.move_cursor(row=0, animate=False)
@@ -405,7 +561,39 @@ class MuxherdApp(App[Session | None]):
 
     def action_new(self, spec: dict | None = None) -> None:
         default_host = self.selected.host.name if self.selected else self.hosts[0].name
-        self.push_screen(NewSessionScreen(self.config, self.hosts, default_host, spec), self._create)
+        self.push_screen(NewSessionScreen(self.config, self.hosts, default_host, spec, self._recent_dirs()), self._create)
+
+    def _recent_dirs(self, limit: int = 8) -> dict[str, list[str]]:
+        """Most recently used session directories per host, for the new-session dialog."""
+        by_host: dict[str, list[str]] = {}
+        ordered = sorted(self.sessions, key=lambda s: s.activity if s.live else s.closed_at, reverse=True)
+        for s in ordered:
+            d = tmux.short_path(s.directory or s.path)
+            dirs = by_host.setdefault(s.host.name, [])
+            if d and d not in dirs and len(dirs) < limit:
+                dirs.append(d)
+        return by_host
+
+    def action_rename(self) -> None:
+        session = self.selected
+        if session is None:
+            return
+
+        def done(new: str | None) -> None:
+            if new and new != session.name:
+                self._rename(session, new)
+
+        self.push_screen(RenameScreen(session), done)
+
+    @work(thread=True)
+    def _rename(self, session: Session, new: str) -> None:
+        try:
+            new = tmux.rename_session(session, new)
+        except HostError as e:
+            self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
+            return
+        self.focus_key = f"{session.host.name}:{new}"
+        self.call_from_thread(self.action_refresh)
 
     def _create(self, spec: dict | None) -> None:
         if spec:

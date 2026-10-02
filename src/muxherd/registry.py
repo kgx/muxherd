@@ -81,6 +81,22 @@ def sync(live: list[dict], known_agents: set[str]) -> list[dict]:
         db.close()
 
 
+def names() -> set[str]:
+    db = connect()
+    try:
+        return {r["name"] for r in db.execute("select name from sessions")}
+    finally:
+        db.close()
+
+
+def rename(old: str, new: str) -> None:
+    db = connect()
+    try:
+        db.execute("update sessions set name = ? where name = ?", (new, old))
+    finally:
+        db.close()
+
+
 def forget(name: str) -> bool:
     db = connect()
     try:

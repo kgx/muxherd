@@ -106,11 +106,19 @@ class Host:
             return path
         if self.is_local:
             return os.path.expanduser(path)
-        p = self.run(["sh", "-c", 'printf %s "$HOME"'])
-        home = p.stdout.strip()
-        if p.returncode != 0 or not home:
-            raise HostError(f"{self.name}: could not resolve $HOME ({p.stderr.strip() or 'ssh failed'})")
-        return home + path[1:]
+        return self.home() + path[1:]
+
+    def home(self) -> str:
+        if self.target not in _remote_homes:
+            p = self.run(["sh", "-c", 'printf %s "$HOME"'])
+            home = p.stdout.strip()
+            if p.returncode != 0 or not home:
+                raise HostError(f"{self.name}: could not resolve $HOME ({p.stderr.strip() or 'ssh failed'})")
+            _remote_homes[self.target] = home
+        return _remote_homes[self.target]
+
+
+_remote_homes: dict[str, str] = {}
 
 
 @dataclass
@@ -291,6 +299,47 @@ def reopen(session: Session, agents: dict[str, Agent], create_dir: bool = False)
         session.host, session.name, session.agent, command, session.directory or "~",
         agent_id=agent_id, create_dir=create_dir,
     )
+
+
+def host_rename(old: str, new: str) -> None:
+    """Runs on the host that owns the session: rename it in tmux and the registry together,
+    so the old name doesn't linger as a phantom closed session."""
+    host = Host(config.local_hostname(), "local")
+    live = {s["name"] for s in tmux_live(host)}
+    if new in live or new in registry.names():
+        raise HostError(f"{host.name}: a session named {new!r} already exists")
+    if old in live:
+        host.tmux("rename-session", "-t", exact(old), new)
+    registry.rename(old, new)
+
+
+def rename_session(session: Session, new: str) -> str:
+    new = sanitize(new)
+    if not new:
+        raise HostError("session name is empty")
+    if new == session.name:
+        return new
+    host = session.host
+    if host.is_local:
+        host_rename(session.name, new)
+        return new
+    p = host.run(["muxherd", "_host", "rename", session.name, new])
+    if p.returncode == 127 and session.live:
+        host.tmux("rename-session", "-t", exact(session.name), new)  # no muxherd there: tmux only
+    elif p.returncode != 0:
+        raise HostError(p.stderr.strip() or f"{host.name}: rename failed")
+    return new
+
+
+def list_dirs(host: Host, parent: str, limit: int = 300) -> list[str]:
+    """Names of the subdirectories of `parent` on `host` (for the new-session dialog)."""
+    path = host.expand_dir(parent)
+    # -L follows symlinks so linked project dirs show up too.
+    p = host.run(["find", "-L", path, "-mindepth", "1", "-maxdepth", "1", "-type", "d"], timeout=5)
+    if p.returncode != 0 and not p.stdout:
+        return []
+    names = sorted(line.rsplit("/", 1)[-1] for line in p.stdout.splitlines() if line)
+    return names[:limit]
 
 
 def forget(session: Session) -> None:

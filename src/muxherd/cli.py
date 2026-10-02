@@ -221,6 +221,28 @@ def kill(
     console.print(f"killed {s.key}")
 
 
+@app.command("rename")
+def rename(
+    query: Annotated[str, typer.Argument(help="Session name or 'host:name' (live or closed).")],
+    new_name: Annotated[str, typer.Argument(help="New name.")],
+) -> None:
+    """Rename a session."""
+    cfg = config.load()
+    host_name, _, name = query.rpartition(":")
+    sessions, errors = tmux.list_all(_hosts(cfg, host_name or None))
+    _report_errors(errors)
+    found = [s for s in sessions if s.name == name]
+    if len(found) != 1:
+        err.print(f"[red]{'ambiguous (use host:name)' if found else 'no session named'} {query!r}[/red]")
+        raise typer.Exit(1)
+    try:
+        new = tmux.rename_session(found[0], new_name)
+    except HostError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"renamed {found[0].key} → {found[0].host.name}:{new}")
+
+
 @app.command("forget")
 def forget(query: Annotated[str, typer.Argument(help="Closed session name or 'host:name'.")]) -> None:
     """Remove a closed session from the registry."""
@@ -246,6 +268,15 @@ def host_sync() -> None:
     """Record live sessions in this host's registry; print live + closed as JSON."""
     try:
         print(json.dumps(tmux.host_sync()))
+    except HostError as e:
+        err.print(str(e))
+        raise typer.Exit(1)
+
+
+@host_app.command("rename")
+def host_rename(old: str, new: str) -> None:
+    try:
+        tmux.host_rename(old, new)
     except HostError as e:
         err.print(str(e))
         raise typer.Exit(1)

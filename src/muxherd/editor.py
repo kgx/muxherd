@@ -9,7 +9,7 @@ import subprocess
 from urllib.parse import quote
 
 from .config import Editor
-from .tmux import HostError, Session
+from .tmux import HostError, Session, project_dir
 
 
 def vscode_remote_uri(target: str, path: str) -> str:
@@ -23,7 +23,7 @@ def vscode_remote_uri(target: str, path: str) -> str:
 
 
 def editor_argv(session: Session, editor: Editor) -> list[str]:
-    path = (session.path if session.live else "") or session.directory or "~"
+    path = project_dir(session)
     template = editor.local if session.host.is_local else editor.remote
     values = {
         "{path}": path,

@@ -48,6 +48,7 @@ class FilterInput(Input):
         Binding("ctrl+e", "app.edit", "editor"),
         Binding("ctrl+o", "app.shell", "shell"),
         Binding("ctrl+r", "app.rename", "rename"),
+        Binding("ctrl+d", "app.chdir", "move dir"),
         Binding("escape", "app.escape", "clear/quit"),
     ]
 
@@ -97,75 +98,30 @@ class DirInput(Input):
     ]
 
 
-class NewSessionScreen(ModalScreen[dict | None]):
-    BINDINGS = [Binding("escape", "cancel", "cancel")]
+class DirBrowserScreen(ModalScreen):
+    """Modal with a directory field (#dir, #dir-label, #suggest) that browses `self.host`.
 
-    def __init__(
-        self,
-        config: Config,
-        hosts: list[Host],
-        default_host: str,
-        spec: dict | None = None,
-        recent_dirs: dict[str, list[str]] | None = None,
-    ) -> None:
+    Subclasses provide `host` and set `recent_dirs` / `set_value`.
+    """
+
+    def __init__(self) -> None:
         super().__init__()
-        self.config = config
-        self.hosts = hosts
-        self.default_host = spec["host"] if spec else default_host
-        self.current_host = self.default_host
-        self.spec = spec  # previous values when reopened to fix a typo
-        self.recent_dirs = recent_dirs or {}
+        self.recent_dirs: dict[str, list[str]] = {}
         self.suggestions: list[str] = []
         self.picked = False  # user moved into the suggestion list with the arrows
         self.set_value: str | None = None  # dir value we set ourselves (Changed for it isn't typing)
 
-    def compose(self) -> ComposeResult:
-        agents = list(self.config.agents)
-        with Vertical(classes="dialog"):
-            yield Label("[b]New session[/b]", classes="title")
-            yield Label("agent")
-            agent = self.spec["agent"] if self.spec else agents[0]
-            yield Select([(a, a) for a in agents], value=agent, allow_blank=False, compact=True, id="agent")
-            yield Label("host")
-            yield Select([(h.name, h.name) for h in self.hosts], value=self.default_host, allow_blank=False, compact=True, id="host")
-            yield Label("directory", id="dir-label")
-            self.set_value = self.spec["dir"] if self.spec else self._default_dir(self.default_host)
-            yield DirInput(self.set_value, compact=True, id="dir")
-            suggest = OptionList(id="suggest", compact=True)
-            suggest.can_focus = False
-            yield suggest
-            yield Label("name")
-            yield Input(self.spec["name"] if self.spec else "", placeholder="auto: <agent>-<dir>", compact=True, id="name")
-            yield Label(
-                "[b]enter[/b] create & attach   [b]↑↓[/b] pick dir   [b]tab[/b] open dir   [b]esc[/b] cancel",
-                classes="hint",
-            )
-
-    def on_mount(self) -> None:
-        self.query_one("#dir", Input).focus()
-        self._show_recent()
-
     @property
     def host(self) -> Host:
-        name = str(self.query_one("#host", Select).value)
-        return next(h for h in self.hosts if h.name == name)
+        raise NotImplementedError
 
-    def _default_dir(self, host_name: str) -> str:
-        host = next(h for h in self.hosts if h.name == host_name)
-        return tmux.short_path(os.getcwd()) if host.is_local else "~"
-
-    @on(Select.Changed, "#host")
-    def host_changed(self, event: Select.Changed) -> None:
-        # Select can report its initial value late (after the user started typing);
-        # only an actual host switch should reset the directory.
-        if str(event.value) == self.current_host:
-            return
-        self.current_host = str(event.value)
-        self.set_value = self._default_dir(str(event.value))
-        self.query_one("#dir", Input).value = self.set_value
-        self._show_recent()
-
-    # ----- directory suggestions -----
+    def dir_widgets(self, value: str) -> ComposeResult:
+        yield Label("directory", id="dir-label")
+        self.set_value = value
+        yield DirInput(value, compact=True, id="dir")
+        suggest = OptionList(id="suggest", compact=True)
+        suggest.can_focus = False
+        yield suggest
 
     def _show_recent(self) -> None:
         recent = self.recent_dirs.get(self.host.name, [])
@@ -250,6 +206,68 @@ class NewSessionScreen(ModalScreen[dict | None]):
         self._accept()
         self.query_one("#dir", Input).focus()
 
+
+
+class NewSessionScreen(DirBrowserScreen):
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(
+        self,
+        config: Config,
+        hosts: list[Host],
+        default_host: str,
+        spec: dict | None = None,
+        recent_dirs: dict[str, list[str]] | None = None,
+    ) -> None:
+        super().__init__()
+        self.config = config
+        self.hosts = hosts
+        self.default_host = spec["host"] if spec else default_host
+        self.current_host = self.default_host
+        self.spec = spec  # previous values when reopened to fix a typo
+        self.recent_dirs = recent_dirs or {}
+
+    def compose(self) -> ComposeResult:
+        agents = list(self.config.agents)
+        with Vertical(classes="dialog"):
+            yield Label("[b]New session[/b]", classes="title")
+            yield Label("agent")
+            agent = self.spec["agent"] if self.spec else agents[0]
+            yield Select([(a, a) for a in agents], value=agent, allow_blank=False, compact=True, id="agent")
+            yield Label("host")
+            yield Select([(h.name, h.name) for h in self.hosts], value=self.default_host, allow_blank=False, compact=True, id="host")
+            yield from self.dir_widgets(self.spec["dir"] if self.spec else self._default_dir(self.default_host))
+            yield Label("name")
+            yield Input(self.spec["name"] if self.spec else "", placeholder="auto: <agent>-<dir>", compact=True, id="name")
+            yield Label(
+                "[b]enter[/b] create & attach   [b]↑↓[/b] pick dir   [b]tab[/b] open dir   [b]esc[/b] cancel",
+                classes="hint",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#dir", Input).focus()
+        self._show_recent()
+
+    @property
+    def host(self) -> Host:
+        name = str(self.query_one("#host", Select).value)
+        return next(h for h in self.hosts if h.name == name)
+
+    def _default_dir(self, host_name: str) -> str:
+        host = next(h for h in self.hosts if h.name == host_name)
+        return tmux.short_path(os.getcwd()) if host.is_local else "~"
+
+    @on(Select.Changed, "#host")
+    def host_changed(self, event: Select.Changed) -> None:
+        # Select can report its initial value late (after the user started typing);
+        # only an actual host switch should reset the directory.
+        if str(event.value) == self.current_host:
+            return
+        self.current_host = str(event.value)
+        self.set_value = self._default_dir(str(event.value))
+        self.query_one("#dir", Input).value = self.set_value
+        self._show_recent()
+
     # ----- submit -----
 
     @on(Input.Submitted)
@@ -264,6 +282,47 @@ class NewSessionScreen(ModalScreen[dict | None]):
                 "name": self.query_one("#name", Input).value.strip(),
             }
         )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ChangeDirScreen(DirBrowserScreen):
+    """Pick a new project directory for a session (dismisses with the path or None)."""
+
+    BINDINGS = [Binding("escape", "cancel", "cancel")]
+
+    def __init__(self, session: Session, recent_dirs: dict[str, list[str]]) -> None:
+        super().__init__()
+        self.session = session
+        self.recent_dirs = recent_dirs
+
+    @property
+    def host(self) -> Host:
+        return self.session.host
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label(f"[b]Change directory[/b] of {self.session.key}", classes="title")
+            yield from self.dir_widgets(tmux.short_path(tmux.project_dir(self.session)))
+            note = (
+                "The running agent stays where it is. This is where the session reopens\n"
+                "and where ctrl+e / ctrl+o open."
+                if self.session.live
+                else "The session will reopen here."
+            )
+            yield Label(note, classes="hint")
+            yield Label("[b]enter[/b] change   [b]↑↓[/b] pick dir   [b]tab[/b] open dir   [b]esc[/b] cancel", classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#dir", Input).focus()
+        self._show_recent()
+
+    @on(Input.Submitted)
+    def submit(self, event: Input.Submitted) -> None:
+        if self.picked and self._accept():
+            return  # enter on a picked suggestion takes it; enter again applies
+        self.dismiss(event.input.value.strip().rstrip("/") or "~")
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -306,7 +365,7 @@ class MuxherdApp(App[Session | None]):
     .dialog Label { margin-top: 1; color: $text-muted; }
     .dialog .title { margin-top: 0; color: $text; }
     .dialog .hint { color: $text-muted; }
-    ConfirmScreen, NewSessionScreen, RenameScreen { align: center middle; }
+    ConfirmScreen, NewSessionScreen, ChangeDirScreen, RenameScreen { align: center middle; }
     #suggest { height: auto; max-height: 8; margin-top: 0; background: $boost; }
     """
     BINDINGS = [
@@ -384,7 +443,7 @@ class MuxherdApp(App[Session | None]):
                     Text(s.name, style="bold"),
                     s.agent,
                     tmux.ago(s.activity, now),
-                    Text(tmux.short_path(s.path), style="dim"),
+                    Text(tmux.short_path(tmux.project_dir(s)), style="dim"),
                 )
             else:
                 row = (
@@ -601,6 +660,36 @@ class MuxherdApp(App[Session | None]):
             if d and d not in dirs and len(dirs) < limit:
                 dirs.append(d)
         return by_host
+
+    def action_chdir(self) -> None:
+        session = self.selected
+        if session is None:
+            return
+
+        def done(directory: str | None) -> None:
+            if directory:
+                self._chdir(session, directory)
+
+        self.push_screen(ChangeDirScreen(session, self._recent_dirs()), done)
+
+    @work(thread=True)
+    def _chdir(self, session: Session, directory: str, create_dir: bool = False) -> None:
+        try:
+            new = tmux.chdir_session(session, directory, create_dir=create_dir)
+        except MissingDirectory as e:
+            def done(ok: bool | None) -> None:
+                if ok:
+                    self._chdir(session, directory, create_dir=True)
+
+            self.call_from_thread(
+                self.push_screen, ConfirmScreen(f"[b]{e.path}[/b] doesn't exist on [b]{e.host}[/b].\nCreate it?"), done
+            )
+            return
+        except HostError as e:
+            self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
+            return
+        self.call_from_thread(self.notify, f"{session.key} → {tmux.short_path(new)}")
+        self.call_from_thread(self.action_refresh)
 
     def action_rename(self) -> None:
         session = self.selected

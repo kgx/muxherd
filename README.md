@@ -96,6 +96,7 @@ mh ls                    # list everything, closed sessions marked ✕ (--live t
 mh kill excelsior:api    # kill (asks first; -y to skip); it stays listed as closed
 mh forget api            # remove a closed session from the registry
 mh rename api api-v2     # rename (live or closed; host:name works too)
+mh chdir api ~/develop/api-v2   # change a session's project directory
 mh hosts                 # reachability check
 ```
 
@@ -108,6 +109,7 @@ mh hosts                 # reachability check
 | ⏎              | attach, or reopen a closed session                         |
 | ctrl+n         | new session (agent, host, directory, name); see below      |
 | ctrl+r         | rename the selected session (live or closed)               |
+| ctrl+d         | change the session's project directory (with dir browser)  |
 | ctrl+x         | kill a live session / forget a closed one (with confirm)   |
 | ctrl+t         | show/hide closed sessions                                  |
 | ctrl+e         | open the session's directory in your editor                |
@@ -121,6 +123,11 @@ remote hosts. It starts out listing directories you've recently used there. As y
 it lists matching subdirectories. **↑↓** pick one, **Tab** (or **→** at the end of the
 line) steps into it, **Enter** on a picked entry takes it, and Enter again creates the
 session. Hidden folders appear once you type a leading `.`.
+
+Each session has a **project directory**: where it was started, unless you change it
+with `ctrl+d` / `mh chdir`. The list shows it, a closed session reopens there, and the
+editor (`ctrl+e`) and throwaway shells (`ctrl+o`) open there. Changing it doesn't move a
+running agent. Claude Code still resumes the same conversation from the new directory.
 
 How attach works:
 - **Local session, run outside tmux:** `tmux attach`.

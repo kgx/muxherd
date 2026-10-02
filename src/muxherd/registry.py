@@ -105,6 +105,14 @@ def rename(old: str, new: str) -> None:
         db.close()
 
 
+def set_directory(name: str, directory: str) -> None:
+    db = connect()
+    try:
+        db.execute("update sessions set directory = ? where name = ?", (directory, name))
+    finally:
+        db.close()
+
+
 def forget(name: str) -> bool:
     db = connect()
     try:

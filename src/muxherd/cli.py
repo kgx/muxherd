@@ -120,7 +120,7 @@ def ls(
                 f"[bold]{s.name}[/bold]",
                 s.agent,
                 tmux.ago(s.activity, now),
-                f"[dim]{tmux.short_path(s.path)}[/dim]",
+                f"[dim]{tmux.short_path(tmux.project_dir(s))}[/dim]",
             )
         else:
             table.add_row(
@@ -262,6 +262,35 @@ def rename(
     console.print(f"renamed {found[0].key} → {found[0].host.name}:{new}")
 
 
+@app.command("chdir")
+def chdir(
+    query: Annotated[str, typer.Argument(help="Session name or 'host:name' (live or closed).")],
+    directory: Annotated[str, typer.Argument(help="New project directory on the session's host.")],
+) -> None:
+    """Change a session's project directory (where it reopens; editor and shells open there)."""
+    cfg = config.load()
+    host_name, _, name = query.rpartition(":")
+    sessions, errors = tmux.list_all(_hosts(cfg, host_name or None))
+    _report_errors(errors)
+    found = [s for s in sessions if s.name == name]
+    if len(found) != 1:
+        err.print(f"[red]{'ambiguous (use host:name)' if found else 'no session named'} {query!r}[/red]")
+        raise typer.Exit(1)
+    try:
+        try:
+            path = tmux.chdir_session(found[0], directory)
+        except tmux.MissingDirectory as e:
+            if not typer.confirm(f"{e.path} doesn't exist on {e.host}. Create it?"):
+                raise typer.Exit(1)
+            path = tmux.chdir_session(found[0], directory, create_dir=True)
+    except HostError as e:
+        err.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    console.print(f"{found[0].key} → {tmux.short_path(path)}")
+    if found[0].live:
+        console.print("[dim]the running agent stays where it is; this applies on reopen, editor and shells[/dim]")
+
+
 @app.command("forget")
 def forget(query: Annotated[str, typer.Argument(help="Closed session name or 'host:name'.")]) -> None:
     """Remove a closed session from the registry."""
@@ -296,6 +325,18 @@ def host_sync() -> None:
 def host_rename(old: str, new: str) -> None:
     try:
         tmux.host_rename(old, new)
+    except HostError as e:
+        err.print(str(e))
+        raise typer.Exit(1)
+
+
+@host_app.command("chdir")
+def host_chdir(name: str, directory: str, create: bool = False) -> None:
+    try:
+        print(tmux.host_chdir(name, directory, create_dir=create))
+    except tmux.MissingDirectory as e:
+        print(e.path)
+        raise typer.Exit(tmux.EXIT_MISSING_DIR)
     except HostError as e:
         err.print(str(e))
         raise typer.Exit(1)

@@ -344,6 +344,43 @@ def rename_session(session: Session, new: str) -> str:
     return new
 
 
+def host_chdir(name: str, directory: str, create_dir: bool = False) -> str:
+    """Runs on the session's host: set its project directory (tmux option + registry).
+
+    The running agent isn't moved; this is where the session reopens and where the
+    editor / throwaway shells open. Returns the absolute directory.
+    """
+    host = Host(config.local_hostname(), "local")
+    path = os.path.abspath(host.expand_dir(directory))
+    if not os.path.isdir(path):
+        if not create_dir:
+            raise MissingDirectory(host.name, path)
+        os.makedirs(path)
+    live = {s["name"] for s in tmux_live(host)}
+    if name in live:
+        host.tmux("set-option", "-t", exact(name), "@muxherd_dir", path)
+    elif name not in registry.names():
+        raise HostError(f"{host.name}: no session named {name!r}")
+    registry.set_directory(name, path)
+    return path
+
+
+EXIT_MISSING_DIR = 3  # `muxherd _host chdir` exit code for a missing directory
+
+
+def chdir_session(session: Session, directory: str, create_dir: bool = False) -> str:
+    host = session.host
+    if host.is_local:
+        return host_chdir(session.name, directory, create_dir)
+    args = ["muxherd", "_host", "chdir", session.name, directory] + (["--create"] if create_dir else [])
+    p = host.run(args)
+    if p.returncode == EXIT_MISSING_DIR:
+        raise MissingDirectory(host.name, p.stdout.strip() or directory)
+    if p.returncode != 0:
+        raise HostError(p.stderr.strip() or f"{host.name}: changing directory failed")
+    return p.stdout.strip()
+
+
 def list_dirs(host: Host, parent: str, limit: int = 300) -> list[str]:
     """Names of the subdirectories of `parent` on `host` (for the new-session dialog)."""
     path = host.expand_dir(parent)

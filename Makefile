@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall check version release test lint
+.PHONY: help install update uninstall check version release test lint screenshot
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -24,6 +24,9 @@ test: ## Run the test suite (uses a private tmux server, never your real one)
 lint: ## Lint and check formatting
 	uv run ruff check .
 	uv run ruff format --check .
+
+screenshot: ## Regenerate docs/picker.svg from made-up demo sessions (private tmux server)
+	uv run python docs/screenshot.py
 
 version: ## Show the version this checkout would build as
 	@git describe --tags --dirty --always

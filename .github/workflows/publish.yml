@@ -1,0 +1,32 @@
+name: Publish to PyPI
+
+# Runs when a GitHub release is published (`make release` creates one). Can also be
+# run by hand for an existing tag: gh workflow run publish.yml --ref vX.Y.Z
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # PyPI trusted publishing (no API token stored anywhere)
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from the tag
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Refuse to publish an untagged version
+        run: |
+          git describe --tags --exact-match HEAD || { echo "HEAD is not a release tag"; exit 1; }
+
+      - name: Build
+        run: uv build
+
+      - name: Publish
+        run: uv publish --trusted-publishing always

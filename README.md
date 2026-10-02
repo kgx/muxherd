@@ -3,17 +3,7 @@
 Herd your AI coding agents — Claude Code, Codex, Grok Build — running in named tmux
 sessions on one or more machines, and jump between them from anywhere on your tailnet.
 
-```
- muxherd  2 live · 1 closed   devbox ✓
- type to filter sessions…
-    host       session          agent   idle  dir
- ●  devbox  claude-infra     claude  4s    ~/src/infra
- ○  devbox  codex-api        codex   12m   ~/src/api
- ✕  devbox  grok-site        grok    1h    ~/src/site
-──────────────────────────────────────────────────────────────
- (live preview of the selected session's pane)
- ^e editor  ^o shell  ^r rename  ⏎ attach  ^x kill/forget  esc clear/quit  ^n new  ^t closed  ^p preview
-```
+![muxherd picker: live and closed agent sessions on a host, with a preview of the selected session](docs/picker.svg)
 
 - **One picker for every host.** muxherd lists tmux sessions on this machine and on any
   host you can reach over ssh, polling every 2 seconds.
@@ -32,6 +22,8 @@ sessions on one or more machines, and jump between them from anywhere on your ta
 ## Install
 
 ```sh
+uv tool install muxherd          # or: pipx install muxherd
+# latest from GitHub:
 uv tool install git+https://github.com/kgx/muxherd
 # or from a clone (a standalone copy, not linked to the repo):
 make install      # `make update` = git pull + reinstall; plain `make` lists targets

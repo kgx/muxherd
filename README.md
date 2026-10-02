@@ -33,7 +33,9 @@ sessions on one or more machines, and jump between them from anywhere on your ta
 
 ```sh
 uv tool install git+ssh://git@github.com/kgx/muxherd
-# dev checkout:
+# from a clone (standalone copy, not linked to the repo):
+make install      # make update = git pull + reinstall; plain `make` lists targets
+# dev checkout (edits take effect immediately):
 uv tool install -e ~/develop/muxherd
 ```
 

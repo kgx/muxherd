@@ -36,6 +36,10 @@ SSH_OPTS = [
 ]
 # Non-interactive ssh gets a minimal PATH; make sure common tmux locations are on it.
 REMOTE_PATH = 'PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin"; '
+# tmux refuses to attach if $TERM has no terminfo entry on that machine (e.g. xterm-kitty
+# on a stock server), so fall back to a universally available one.
+FALLBACK_TERM = "xterm-256color"
+REMOTE_TERM_FIX = f'infocmp "$TERM" >/dev/null 2>&1 || export TERM={FALLBACK_TERM}; '
 
 
 class HostError(Exception):
@@ -68,7 +72,8 @@ class Host:
             CONTROL_DIR.mkdir(parents=True, exist_ok=True)
             cmd = ["ssh", *SSH_OPTS, self.target, REMOTE_PATH + shlex.join(args)]
         try:
-            return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            # No tty on stdin: tmux skips its terminal checks (e.g. unknown $TERM) for these queries.
+            return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as e:
             raise HostError(f"{self.name}: timed out") from e
         except FileNotFoundError as e:
@@ -197,12 +202,21 @@ def attach_argv(session: Session, mode: str = "mosh") -> list[str]:
         return ["tmux", "attach-session", "-t", target]
     if mode == "mosh" and shutil.which("mosh"):
         return ["mosh", host.target, "--", "tmux", "attach-session", "-t", target]
-    return ["ssh", "-t", host.target, REMOTE_PATH + shlex.join(["tmux", "attach-session", "-t", target])]
+    return ["ssh", "-t", host.target, REMOTE_PATH + REMOTE_TERM_FIX + shlex.join(["tmux", "attach-session", "-t", target])]
+
+
+def has_terminfo(term: str) -> bool:
+    if not shutil.which("infocmp"):
+        return True  # can't tell; leave $TERM alone
+    return subprocess.run(["infocmp", term], capture_output=True).returncode == 0
 
 
 def attach(session: Session, mode: str = "mosh") -> None:
     """Replace this process with the attach command."""
     argv = attach_argv(session, mode)
+    term = os.environ.get("TERM", "")
+    if session.host.is_local and term and not has_terminfo(term):
+        os.environ["TERM"] = FALLBACK_TERM
     os.execvp(argv[0], argv)
 
 

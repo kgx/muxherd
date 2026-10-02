@@ -45,13 +45,10 @@ def _pick(initial_filter: str = "", mode: str = "attach") -> None:
     from .tui import MuxherdApp
 
     cfg = config.load()
-    picker = MuxherdApp(cfg, initial_filter, mode=mode)
-    session = picker.run()
-    if session is None:
-        return
-    if picker.exit_action == "shell":
-        tmux.open_shell(session, cfg.attach)
-    tmux.attach(session, cfg.attach)  # the picker already reopened closed sessions
+    session = MuxherdApp(cfg, initial_filter, mode=mode).run()
+    if session is not None:
+        # The picker already reopened closed sessions / created shells.
+        tmux.attach(session, cfg.attach)
 
 
 def _find(query: str, cfg: config.Config) -> tuple[list[Session], dict[str, str]]:
@@ -167,13 +164,19 @@ def code(query: Annotated[Optional[str], typer.Argument(help="Session name, 'hos
 
 @app.command("sh")
 def sh(query: Annotated[Optional[str], typer.Argument(help="Session name, 'host:name', or part of a name.")] = None) -> None:
-    """Open a throwaway shell in a session's project directory, on its host (no tmux)."""
+    """Open a throwaway shell (its own tmux session) in a session's project directory."""
     cfg = config.load()
     if query:
         found, errors = _find(query, cfg)
         _report_errors(errors)
         if len(found) == 1:
-            tmux.open_shell(found[0], cfg.attach)
+            try:
+                shell = tmux.open_shell_session(found[0])
+            except HostError as e:
+                err.print(f"[red]{e}[/red]")
+                raise typer.Exit(1)
+            console.print(f"opened [cyan]{shell.host.name}[/cyan]:[bold]{shell.name}[/bold] in {tmux.short_path(shell.directory)}")
+            tmux.attach(shell, cfg.attach)
     _pick(query.rpartition(":")[2] if query else "", mode="shell")
 
 

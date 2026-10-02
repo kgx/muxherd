@@ -24,7 +24,8 @@ create table if not exists sessions (
     agent_id   text not null default '',  -- e.g. Claude Code --session-id, used to resume
     created    integer not null default 0,  -- tmux session_created of the latest incarnation
     last_seen  integer not null default 0,
-    closed_at  integer                    -- null while the tmux session is alive
+    closed_at  integer,                   -- null while the tmux session is alive
+    ephemeral  integer not null default 0  -- throwaway shell: deleted instead of closed
 )
 """
 
@@ -35,6 +36,9 @@ def connect() -> sqlite3.Connection:
     db.row_factory = sqlite3.Row
     db.execute("pragma journal_mode=wal")
     db.execute(SCHEMA)
+    columns = {r["name"] for r in db.execute("pragma table_info(sessions)")}
+    if "ephemeral" not in columns:  # registries created before throwaway shells
+        db.execute("alter table sessions add column ephemeral integer not null default 0")
     return db
 
 
@@ -60,18 +64,22 @@ def sync(live: list[dict], known_agents: set[str]) -> list[dict]:
             directory = s["directory"] or (old["directory"] if same and old["directory"] else s["path"])
             agent_id = s["agent_id"] or (old["agent_id"] if same else "")
             db.execute(
-                """insert into sessions (name, agent, directory, agent_id, created, last_seen, closed_at)
-                   values (?, ?, ?, ?, ?, ?, null)
+                """insert into sessions (name, agent, directory, agent_id, created, last_seen, closed_at, ephemeral)
+                   values (?, ?, ?, ?, ?, ?, null, ?)
                    on conflict(name) do update set
                      agent = excluded.agent, directory = excluded.directory, agent_id = excluded.agent_id,
-                     created = excluded.created, last_seen = excluded.last_seen, closed_at = null""",
-                (s["name"], agent, directory, agent_id, s["created"], now),
+                     created = excluded.created, last_seen = excluded.last_seen, closed_at = null,
+                     ephemeral = excluded.ephemeral""",
+                (s["name"], agent, directory, agent_id, s["created"], now, int(s.get("ephemeral", False))),
             )
         live_names = {s["name"] for s in live}
         for name, row in existing.items():
             if name not in live_names and row["closed_at"] is None:
-                # We only know it was alive when last seen; that's the best close time we have.
-                db.execute("update sessions set closed_at = last_seen where name = ?", (name,))
+                if row["ephemeral"]:
+                    db.execute("delete from sessions where name = ?", (name,))  # throwaway shell ended
+                else:
+                    # We only know it was alive when last seen; that's the best close time we have.
+                    db.execute("update sessions set closed_at = last_seen where name = ?", (name,))
         db.execute("commit")
         return [dict(r) for r in db.execute("select * from sessions where closed_at is not null")]
     except BaseException:

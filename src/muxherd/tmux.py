@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import random
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -27,6 +28,7 @@ FIELDS = [
     "@muxherd_agent",
     "@muxherd_id",
     "@muxherd_dir",
+    "@muxherd_ephemeral",
     "pane_current_command",
     "pane_current_path",
 ]
@@ -135,6 +137,7 @@ class Session:
     agent_id: str = ""  # agent conversation id used to resume (e.g. claude --session-id)
     live: bool = True  # False: closed, known only from the registry
     closed_at: int = 0
+    ephemeral: bool = False  # throwaway shell: forgotten instead of kept as closed when it ends
 
     @property
     def key(self) -> str:
@@ -161,7 +164,7 @@ def tmux_live(host: Host) -> list[dict]:
         parts = line.split(SEP)
         if len(parts) != len(FIELDS):
             continue
-        name, attached, activity, created, windows, agent, agent_id, directory, command, path = parts
+        name, attached, activity, created, windows, agent, agent_id, directory, ephemeral, command, path = parts
         sessions.append(
             {
                 "name": name,
@@ -172,6 +175,7 @@ def tmux_live(host: Host) -> list[dict]:
                 "agent": agent,
                 "agent_id": agent_id,
                 "directory": directory,
+                "ephemeral": ephemeral == "1",
                 "command": command,
                 "path": path,
             }
@@ -230,7 +234,15 @@ def capture(session: Session, lines: int = 200) -> str:
 
 
 def new_session(
-    host: Host, name: str, agent: str, command: str, directory: str, *, agent_id: str = "", create_dir: bool = False
+    host: Host,
+    name: str,
+    agent: str,
+    command: str,
+    directory: str,
+    *,
+    agent_id: str = "",
+    create_dir: bool = False,
+    ephemeral: bool = False,
 ) -> Session:
     name = sanitize(name)
     if not name:
@@ -249,6 +261,7 @@ def new_session(
         ";", "set-option", "-t", exact(name), "@muxherd_agent", agent,
         ";", "set-option", "-t", exact(name), "@muxherd_id", agent_id,
         ";", "set-option", "-t", exact(name), "@muxherd_dir", directory,
+        ";", "set-option", "-t", exact(name), "@muxherd_ephemeral", "1" if ephemeral else "",
     ]
     if command:
         # Type the command into the login shell so the agent gets the user's full
@@ -260,7 +273,7 @@ def new_session(
         list_sessions(host)  # record it in the registry right away
     except HostError:
         pass
-    return Session(host, name, agent=agent, path=directory, directory=directory, agent_id=agent_id)
+    return Session(host, name, agent=agent, path=directory, directory=directory, agent_id=agent_id, ephemeral=ephemeral)
 
 
 def start_command(agent: Agent) -> tuple[str, str]:
@@ -373,25 +386,37 @@ def project_dir(session: Session) -> str:
     return session.directory or session.path or "~"
 
 
-# Login shell in a directory; falls back to $HOME if the directory is gone.
-_SHELL_SCRIPT = 'cd -- "$1" 2>/dev/null || { echo "muxherd: $1 not found, staying in $HOME" >&2; cd; }; exec "${SHELL:-/bin/sh}" -l'
+ADJECTIVES = [
+    "brave", "sleepy", "fuzzy", "sneaky", "jolly", "grumpy", "zesty", "wobbly", "plucky", "breezy",
+    "cosmic", "dapper", "feisty", "giddy", "humble", "nimble", "peppy", "quirky", "snappy", "witty",
+]
+ANIMALS = [
+    "otter", "badger", "llama", "narwhal", "gecko", "puffin", "wombat", "ferret", "yak", "lemur",
+    "walrus", "axolotl", "capybara", "heron", "marmot", "newt", "ocelot", "panda", "quokka", "tapir",
+]
 
 
-def shell_argv(session: Session, mode: str = "mosh") -> list[str]:
-    """Ephemeral login shell in the session's project directory, on its host (no tmux)."""
-    host, directory = session.host, project_dir(session)
-    inner = ["sh", "-c", _SHELL_SCRIPT, "sh", directory]
-    if host.is_local:
-        return inner
-    if mode == "mosh" and shutil.which("mosh"):
-        return ["mosh", host.target, "--", *inner]
-    return ["ssh", "-t", host.target, REMOTE_TERM_FIX + shlex.join(inner)]
+def funny_name(base: str, taken: set[str]) -> str:
+    for _ in range(100):
+        name = f"{base}-{random.choice(ADJECTIVES)}-{random.choice(ANIMALS)}"
+        if name not in taken:
+            return name
+    return f"{base}-{uuid.uuid4().hex[:6]}"
 
 
-def open_shell(session: Session, mode: str = "mosh") -> None:
-    """Replace this process with the shell."""
-    argv = shell_argv(session, mode)
-    os.execvp(argv[0], argv)
+def open_shell_session(session: Session) -> Session:
+    """New ephemeral tmux session running a shell in the session's project directory.
+
+    It's a normal tmux session (survives disconnects), but `exit` ends it and the
+    registry forgets it instead of keeping it as closed.
+    """
+    host = session.host
+    taken = {s.name for s in list_sessions(host)}
+    name = funny_name(session.name, taken)
+    try:
+        return new_session(host, name, "shell", "", project_dir(session), ephemeral=True)
+    except MissingDirectory:
+        return new_session(host, name, "shell", "", "~", ephemeral=True)  # project dir is gone
 
 
 def has_terminfo(term: str) -> bool:

@@ -87,7 +87,7 @@ mh                       # picker
 mh a infra               # attach (or reopen if closed): name, host:name, or unique substring
 
 mh code infra            # open the session's directory in VS Code (no name: picker)
-mh sh infra              # throwaway shell in the session's project dir on its host (no name: picker)
+mh sh infra              # throwaway shell (own tmux session) in the session's project dir
 mh new -a codex          # new codex session in cwd, named codex-<dir>, then attach
 mh new api -a claude -H excelsior -d ~/develop/api -D   # create detached on a host
 mh ls                    # list everything, closed sessions marked ✕ (--live to hide them)
@@ -109,7 +109,7 @@ mh hosts                 # reachability check
 | ctrl+x         | kill a live session / forget a closed one (with confirm)   |
 | ctrl+t         | show/hide closed sessions                                  |
 | ctrl+e         | open the session's directory in your editor                |
-| ctrl+o         | throwaway shell in the session's project directory         |
+| ctrl+o         | throwaway shell (own tmux session) in the project directory |
 | ctrl+p         | toggle preview pane                                        |
 | F5             | refresh now (it also refreshes every 2s)                   |
 | esc            | clear filter, then quit                                    |
@@ -128,11 +128,16 @@ How attach works:
 
 ## Throwaway shells
 
-`ctrl+o` in the picker, or `mh sh [name]`, opens a plain login shell in the session's
-project directory (where it was started) on the session's host. It runs over mosh for
-remote hosts, or ssh if mosh isn't available. It's deliberately **not** a tmux session:
-nothing is registered and `exit` closes it for good. It's useful for a quick `git status`
-or test run next to an agent without disturbing its session.
+`ctrl+o` in the picker, or `mh sh [name]`, opens a shell in the session's project
+directory (where it was started) as **its own tmux session** on the same host. It gets a
+generated name next to its parent, e.g. `claude-infra-brave-otter`, and you're attached
+to it right away.
+
+- If you get disconnected, it's still there: reattach from the picker like any session.
+- `exit` ends it, and the registry forgets it instead of listing it as closed, so shells
+  don't pile up.
+- The agent's session is untouched (a window in the agent's own session would switch
+  every attached client to it).
 
 ## Editor
 

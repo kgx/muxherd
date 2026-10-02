@@ -322,8 +322,6 @@ class MuxherdApp(App[Session | None]):
         super().__init__()
         # What enter does: "attach", "editor" (`mh code`) or "shell" (`mh sh`).
         self.mode = mode
-        # How the app ended, read by the CLI: "attach" or "shell" (with the session as return value).
-        self.exit_action = "attach"
         self.config = config
         self.hosts = [Host(name, target) for name, target in config.hosts.items()]
         self.sessions: list[Session] = []
@@ -519,8 +517,16 @@ class MuxherdApp(App[Session | None]):
 
     def action_shell(self) -> None:
         if self.selected:
-            self.exit_action = "shell"
-            self.exit(self.selected)
+            self._shell(self.selected)
+
+    @work(thread=True)
+    def _shell(self, session: Session) -> None:
+        try:
+            shell = tmux.open_shell_session(session)
+        except HostError as e:
+            self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
+            return
+        self.call_from_thread(self.exit, shell)
 
     def action_edit(self) -> None:
         if self.selected:
@@ -562,7 +568,9 @@ class MuxherdApp(App[Session | None]):
             if ok:
                 self._kill(session)
 
-        if session.live:
+        if session.live and session.ephemeral:
+            message = f"Kill shell [b]{session.key}[/b]?"
+        elif session.live:
             message = f"Kill session [b]{session.key}[/b]?\nIt stays in the list as closed, so you can reopen it."
         else:
             message = f"Forget closed session [b]{session.key}[/b]?"

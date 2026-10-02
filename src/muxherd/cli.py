@@ -127,7 +127,12 @@ def new(
         taken = {s.name for s in tmux.list_sessions(h)}
         name = unique_name(f"{agent}-{os.path.basename(directory.rstrip('/'))}", taken)
     try:
-        name = tmux.new_session(h, name, agent, cfg.agents[agent], directory)
+        try:
+            name = tmux.new_session(h, name, agent, cfg.agents[agent], directory)
+        except tmux.MissingDirectory as e:
+            if not typer.confirm(f"{e.path} doesn't exist on {e.host}. Create it?"):
+                raise typer.Exit(1)
+            name = tmux.new_session(h, name, agent, cfg.agents[agent], directory, create_dir=True)
     except HostError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1)

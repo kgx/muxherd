@@ -46,6 +46,12 @@ class HostError(Exception):
     pass
 
 
+class MissingDirectory(HostError):
+    def __init__(self, host: str, path: str) -> None:
+        super().__init__(f"{host}: no such directory {path}")
+        self.host, self.path = host, path
+
+
 def sanitize(name: str) -> str:
     """tmux session names can't contain '.' or ':'; keep them shell-friendly too."""
     return re.sub(r"[^\w-]+", "-", name).strip("-")
@@ -168,14 +174,19 @@ def capture(session: Session, lines: int = 200) -> str:
     return out.rstrip("\n")
 
 
-def new_session(host: Host, name: str, agent: str, command: str, directory: str) -> str:
+def new_session(host: Host, name: str, agent: str, command: str, directory: str, create_dir: bool = False) -> str:
     name = sanitize(name)
     if not name:
         raise HostError("session name is empty")
     directory = host.expand_dir(directory)
-    # tmux silently falls back to $HOME for a missing -c directory; fail loudly instead.
+    # tmux silently falls back to $HOME for a missing -c directory, so check first and
+    # let the caller confirm creating it (a missing dir is often a typo).
     if host.run(["test", "-d", directory]).returncode != 0:
-        raise HostError(f"{host.name}: no such directory {directory}")
+        if not create_dir:
+            raise MissingDirectory(host.name, directory)
+        p = host.run(["mkdir", "-p", directory])
+        if p.returncode != 0:
+            raise HostError(f"{host.name}: could not create {directory}: {p.stderr.strip()}")
     args = [
         "new-session", "-d", "-s", name, "-c", directory,
         ";", "set-option", "-t", exact(name), "@muxherd_agent", agent,

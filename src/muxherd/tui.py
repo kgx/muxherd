@@ -16,7 +16,7 @@ from textual.worker import get_current_worker
 
 from . import tmux
 from .config import Config
-from .tmux import Host, HostError, Session
+from .tmux import Host, HostError, MissingDirectory, Session
 
 REFRESH_SECONDS = 2.0
 
@@ -70,24 +70,26 @@ class ConfirmScreen(ModalScreen[bool]):
 class NewSessionScreen(ModalScreen[dict | None]):
     BINDINGS = [Binding("escape", "cancel", "cancel")]
 
-    def __init__(self, config: Config, hosts: list[Host], default_host: str) -> None:
+    def __init__(self, config: Config, hosts: list[Host], default_host: str, spec: dict | None = None) -> None:
         super().__init__()
         self.config = config
         self.hosts = hosts
-        self.default_host = default_host
+        self.default_host = spec["host"] if spec else default_host
+        self.spec = spec  # previous values when reopened to fix a typo
 
     def compose(self) -> ComposeResult:
         agents = list(self.config.agents)
         with Vertical(classes="dialog"):
             yield Label("[b]New session[/b]", classes="title")
             yield Label("agent")
-            yield Select([(a, a) for a in agents], value=agents[0], allow_blank=False, compact=True, id="agent")
+            agent = self.spec["agent"] if self.spec else agents[0]
+            yield Select([(a, a) for a in agents], value=agent, allow_blank=False, compact=True, id="agent")
             yield Label("host")
             yield Select([(h.name, h.name) for h in self.hosts], value=self.default_host, allow_blank=False, compact=True, id="host")
             yield Label("directory")
-            yield Input(self._default_dir(self.default_host), compact=True, id="dir")
+            yield Input(self.spec["dir"] if self.spec else self._default_dir(self.default_host), compact=True, id="dir")
             yield Label("name")
-            yield Input(placeholder="auto: <agent>-<dir>", compact=True, id="name")
+            yield Input(self.spec["name"] if self.spec else "", placeholder="auto: <agent>-<dir>", compact=True, id="name")
             yield Label("[b]enter[/b] create & attach   [b]tab[/b] next field   [b]esc[/b] cancel", classes="hint")
 
     def on_mount(self) -> None:
@@ -99,6 +101,8 @@ class NewSessionScreen(ModalScreen[dict | None]):
 
     @on(Select.Changed, "#host")
     def host_changed(self, event: Select.Changed) -> None:
+        if self.spec and str(event.value) == self.spec["host"]:
+            return  # initial value when reopened; keep the user's directory
         self.query_one("#dir", Input).value = self._default_dir(str(event.value))
 
     @on(Input.Submitted)
@@ -300,9 +304,9 @@ class MuxherdApp(App[Session | None]):
             self.call_from_thread(self.notify, str(e), severity="error")
         self.call_from_thread(self.action_refresh)
 
-    def action_new(self) -> None:
+    def action_new(self, spec: dict | None = None) -> None:
         default_host = self.selected.host.name if self.selected else self.hosts[0].name
-        self.push_screen(NewSessionScreen(self.config, self.hosts, default_host), self._create)
+        self.push_screen(NewSessionScreen(self.config, self.hosts, default_host, spec), self._create)
 
     def _create(self, spec: dict | None) -> None:
         if spec:
@@ -315,9 +319,26 @@ class MuxherdApp(App[Session | None]):
         base = spec["name"] or f"{spec['agent']}-{os.path.basename(spec['dir'].rstrip('/')) or 'home'}"
         name = unique_name(base, taken) if not spec["name"] else tmux.sanitize(base)
         try:
-            name = tmux.new_session(host, name, spec["agent"], self.config.agents.get(spec["agent"], ""), spec["dir"])
+            name = tmux.new_session(
+                host, name, spec["agent"], self.config.agents.get(spec["agent"], ""), spec["dir"],
+                create_dir=spec.get("create_dir", False),
+            )
+        except MissingDirectory as e:
+            self.call_from_thread(self._confirm_mkdir, spec, e)
+            return
         except HostError as e:
             self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
             return
         session = Session(host, name, 0, 0, 0, 1, spec["agent"], spec["dir"])
         self.call_from_thread(self.exit, session)
+
+    def _confirm_mkdir(self, spec: dict, e: MissingDirectory) -> None:
+        def done(ok: bool | None) -> None:
+            if ok:
+                self._create_worker({**spec, "create_dir": True})
+            else:
+                self.action_new(spec)  # back to the form to fix the path
+
+        self.push_screen(
+            ConfirmScreen(f"[b]{e.path}[/b] doesn't exist on [b]{e.host}[/b].\nCreate it?"), done
+        )

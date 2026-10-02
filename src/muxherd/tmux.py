@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
+
+from . import config, registry
+from .config import Agent
 
 SEP = "\t"
 FIELDS = [
@@ -20,6 +25,8 @@ FIELDS = [
     "session_created",
     "session_windows",
     "@muxherd_agent",
+    "@muxherd_id",
+    "@muxherd_dir",
     "pane_current_command",
     "pane_current_path",
 ]
@@ -110,19 +117,29 @@ class Host:
 class Session:
     host: Host
     name: str
-    attached: int
-    activity: int
-    created: int
-    windows: int
-    agent: str
-    path: str
+    attached: int = 0
+    activity: int = 0
+    created: int = 0
+    windows: int = 1
+    agent: str = ""
+    path: str = ""  # current directory of the active pane
+    directory: str = ""  # directory the session was started in (where it reopens)
+    agent_id: str = ""  # agent conversation id used to resume (e.g. claude --session-id)
+    live: bool = True  # False: closed, known only from the registry
+    closed_at: int = 0
 
     @property
     def key(self) -> str:
         return f"{self.host.name}:{self.name}"
 
+    @classmethod
+    def from_dict(cls, host: Host, d: dict) -> Session:
+        known = {f.name for f in fields(cls)} - {"host"}
+        return cls(host=host, **{k: v for k, v in d.items() if k in known and v is not None})
 
-def list_sessions(host: Host) -> list[Session]:
+
+def tmux_live(host: Host) -> list[dict]:
+    """Raw list of live tmux sessions on a host."""
     p = host.run(["tmux", "list-sessions", "-F", FORMAT])
     if p.returncode != 0:
         err = (p.stderr or "").strip()
@@ -136,20 +153,49 @@ def list_sessions(host: Host) -> list[Session]:
         parts = line.split(SEP)
         if len(parts) != len(FIELDS):
             continue
-        name, attached, activity, created, windows, agent, cmd, path = parts
+        name, attached, activity, created, windows, agent, agent_id, directory, command, path = parts
         sessions.append(
-            Session(
-                host=host,
-                name=name,
-                attached=int(attached or 0),
-                activity=int(activity or 0),
-                created=int(created or 0),
-                windows=int(windows or 0),
-                agent=agent or cmd,
-                path=path,
-            )
+            {
+                "name": name,
+                "attached": int(attached or 0),
+                "activity": int(activity or 0),
+                "created": int(created or 0),
+                "windows": int(windows or 0),
+                "agent": agent,
+                "agent_id": agent_id,
+                "directory": directory,
+                "command": command,
+                "path": path,
+            }
         )
     return sessions
+
+
+def host_sync() -> list[dict]:
+    """Runs on the host that owns the sessions: update its registry, return live + closed."""
+    live = tmux_live(Host(config.local_hostname(), "local"))
+    closed = registry.sync(live, set(config.load().agents))
+    out = [{**s, "agent": s["agent"] or s["command"], "live": True} for s in live]
+    out += [{**c, "path": c["directory"], "live": False} for c in closed]
+    return out
+
+
+def list_sessions(host: Host) -> list[Session]:
+    if host.is_local:
+        rows = host_sync()
+    else:
+        p = host.run(["muxherd", "_host", "sync"])
+        if p.returncode == 0:
+            rows = json.loads(p.stdout)
+        elif p.returncode == 127:
+            # muxherd isn't installed on that host: live sessions only, no registry.
+            rows = [{**s, "agent": s["agent"] or s["command"]} for s in tmux_live(host)]
+        elif p.returncode == 255:
+            err = p.stderr.strip()
+            raise HostError(f"{host.name}: unreachable ({err.splitlines()[-1] if err else 'ssh failed'})")
+        else:
+            raise HostError(f"{host.name}: {p.stderr.strip() or 'muxherd _host sync failed'}")
+    return [Session.from_dict(host, r) for r in rows]
 
 
 def list_all(hosts: list[Host]) -> tuple[list[Session], dict[str, str]]:
@@ -165,7 +211,8 @@ def list_all(hosts: list[Host]) -> tuple[list[Session], dict[str, str]]:
                 sessions.extend(fut.result())
             except HostError as e:
                 errors[name] = str(e)
-    sessions.sort(key=lambda s: (s.host.name, s.name))
+    # Live sessions first, then closed ones, most recently closed first.
+    sessions.sort(key=lambda s: (0, s.host.name, s.name, 0) if s.live else (1, "", "", -s.closed_at))
     return sessions, errors
 
 
@@ -174,7 +221,9 @@ def capture(session: Session, lines: int = 200) -> str:
     return out.rstrip("\n")
 
 
-def new_session(host: Host, name: str, agent: str, command: str, directory: str, create_dir: bool = False) -> str:
+def new_session(
+    host: Host, name: str, agent: str, command: str, directory: str, *, agent_id: str = "", create_dir: bool = False
+) -> Session:
     name = sanitize(name)
     if not name:
         raise HostError("session name is empty")
@@ -190,6 +239,8 @@ def new_session(host: Host, name: str, agent: str, command: str, directory: str,
     args = [
         "new-session", "-d", "-s", name, "-c", directory,
         ";", "set-option", "-t", exact(name), "@muxherd_agent", agent,
+        ";", "set-option", "-t", exact(name), "@muxherd_id", agent_id,
+        ";", "set-option", "-t", exact(name), "@muxherd_dir", directory,
     ]
     if command:
         # Type the command into the login shell so the agent gets the user's full
@@ -197,7 +248,48 @@ def new_session(host: Host, name: str, agent: str, command: str, directory: str,
         # killing the session.
         args += [";", "send-keys", "-t", exact(name), command, "Enter"]
     host.tmux(*args)
-    return name
+    try:
+        list_sessions(host)  # record it in the registry right away
+    except HostError:
+        pass
+    return Session(host, name, agent=agent, path=directory, directory=directory, agent_id=agent_id)
+
+
+def start_command(agent: Agent) -> tuple[str, str]:
+    """(command, agent_id) for a fresh session."""
+    agent_id = str(uuid.uuid4()) if "{id}" in agent.start else ""
+    return agent.start.replace("{id}", agent_id), agent_id
+
+
+def resume_command(agent: Agent, agent_id: str) -> tuple[str, str]:
+    """(command, agent_id) for reopening a closed session."""
+    if agent.resume and ("{id}" not in agent.resume or agent_id):
+        return agent.resume.replace("{id}", agent_id), agent_id
+    return start_command(agent)
+
+
+def create(host: Host, name: str, agent_name: str, agents: dict[str, Agent], directory: str, create_dir: bool = False) -> Session:
+    command, agent_id = start_command(agents.get(agent_name, Agent()))
+    return new_session(host, name, agent_name, command, directory, agent_id=agent_id, create_dir=create_dir)
+
+
+def reopen(session: Session, agents: dict[str, Agent], create_dir: bool = False) -> Session:
+    """Start a closed session again under the same name, resuming the agent if possible."""
+    command, agent_id = resume_command(agents.get(session.agent, Agent()), session.agent_id)
+    return new_session(
+        session.host, session.name, session.agent, command, session.directory or "~",
+        agent_id=agent_id, create_dir=create_dir,
+    )
+
+
+def forget(session: Session) -> None:
+    """Drop a closed session from its host's registry."""
+    if session.host.is_local:
+        registry.forget(session.name)
+        return
+    p = session.host.run(["muxherd", "_host", "forget", session.name])
+    if p.returncode != 0:
+        raise HostError(f"{session.host.name}: {p.stderr.strip() or 'forget failed'}")
 
 
 def kill_session(session: Session) -> None:

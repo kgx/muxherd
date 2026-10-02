@@ -4,15 +4,15 @@ Herd your AI coding agents — Claude Code, Codex, Grok Build — running in nam
 sessions on one or more machines, and jump between them from anywhere on your tailnet.
 
 ```
- muxherd  3/3 sessions   excelsior ✓
+ muxherd  2 live · 1 closed   excelsior ✓
  type to filter sessions…
     host       session          agent   idle  dir
  ●  excelsior  claude-infra     claude  4s    ~/develop/infra
  ○  excelsior  codex-api        codex   12m   ~/develop/api
- ○  excelsior  grok-site        grok    1h    ~/develop/site
+ ✕  excelsior  grok-site        grok    1h    ~/develop/site
 ──────────────────────────────────────────────────────────────
  (live preview of the selected session's pane)
- ⏎ attach  ^x kill  esc clear/quit  ^n new  ^r refresh  ^p preview
+ ⏎ attach  ^x kill/forget  esc clear/quit  ^n new  ^t closed  ^r refresh  ^p preview
 ```
 
 - **One picker for every host.** muxherd lists tmux sessions on this machine and on any
@@ -22,6 +22,10 @@ sessions on one or more machines, and jump between them from anywhere on your ta
   of losing the session.
 - **mosh for remote attach.** A laptop on flaky Wi-Fi stays connected, and the tmux
   session survives either way.
+- **Closed sessions are remembered.** Every session is recorded in a small SQLite
+  registry on the host that runs it. When a session ends, it stays in the list marked ✕,
+  and Enter reopens it with the same name and directory. For Claude Code, that resumes
+  the same conversation.
 - **Nothing runs in the background.** muxherd talks to `tmux` directly, or over `ssh`
   for remote hosts, reusing one ssh connection per host via ControlMaster.
 
@@ -80,11 +84,13 @@ covers. To keep sshd off other interfaces entirely, set
 
 ```sh
 mh                       # picker
-mh a infra               # attach: exact name, host:name, or unique substring (else picker)
+mh a infra               # attach (or reopen if closed): name, host:name, or unique substring
+
 mh new -a codex          # new codex session in cwd, named codex-<dir>, then attach
 mh new api -a claude -H excelsior -d ~/develop/api -D   # create detached on a host
-mh ls                    # list everything
-mh kill excelsior:api    # kill (asks first; -y to skip)
+mh ls                    # list everything, closed sessions marked ✕ (--live to hide them)
+mh kill excelsior:api    # kill (asks first; -y to skip); it stays listed as closed
+mh forget api            # remove a closed session from the registry
 mh hosts                 # reachability check
 ```
 
@@ -94,9 +100,10 @@ mh hosts                 # reachability check
 | -------------- | ---------------------------------------------------------- |
 | type           | filter (space-separated terms match host, name, agent, dir) |
 | ↑ ↓ PgUp PgDn  | move                                                       |
-| ⏎              | attach                                                     |
+| ⏎              | attach, or reopen a closed session                         |
 | ctrl+n         | new session (agent, host, directory, name)                 |
-| ctrl+x         | kill selected (with confirm)                               |
+| ctrl+x         | kill a live session / forget a closed one (with confirm)   |
+| ctrl+t         | show/hide closed sessions                                  |
 | ctrl+p         | toggle preview pane                                        |
 | ctrl+r         | refresh now                                                |
 | esc            | clear filter, then quit                                    |
@@ -118,14 +125,39 @@ attach = "mosh"            # or "ssh"
 excelsior = "local"        # this machine
 # venture = "kgx@venture"  # any ssh target
 
-[agents]                   # name = command typed into the new session's shell
-claude = "claude"
-codex = "codex"
-grok = "grok"
-shell = ""
+[agents.claude]
+start = "claude --session-id {id}"   # typed into the new session's shell
+resume = "claude --resume {id}"      # typed when reopening a closed session
+
+[agents.codex]
+start = "codex"
+resume = "codex resume --last"
+
+[agents.grok]
+start = "grok"                       # no resume: reopening starts it fresh
+
+[agents.shell]
+start = ""
 ```
 
-Agent commands can include flags, e.g. `claude-yolo = "claude --dangerously-skip-permissions"`.
+`{id}` becomes a fresh UUID when a session starts. muxherd stores it, and `resume` uses
+it to pick up the same conversation. If an agent has no `resume`, or the session has no
+stored ID, reopening runs `start` instead. A plain string (`yolo = "claude --dangerously-skip-permissions"`)
+is shorthand for `start` only.
+
+## Session registry
+
+Each host keeps a registry at `~/.local/state/muxherd/registry.db` (SQLite; override
+with `$MUXHERD_REGISTRY`). It's updated whenever muxherd lists that host's sessions:
+live sessions are recorded, and sessions that disappeared are marked closed.
+Sessions started outside muxherd (plain `tmux new -s`) are recorded too.
+
+Clients read a remote host's registry with `ssh <host> muxherd _host sync`, so
+**install muxherd on every host that runs sessions**. Without it, muxherd falls back
+to plain tmux on that host and only shows live sessions.
+
+A session counts as closed from the last time muxherd saw it alive. If no picker was
+open when it ended, the close time is approximate.
 
 The agent column shows the agent muxherd launched the session with, which it stores in
 the `@muxherd_agent` tmux option. For sessions muxherd didn't create, it shows the pane's

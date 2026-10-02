@@ -10,7 +10,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__, config, tmux
+import json
+
+from . import __version__, config, registry, tmux
 from .tmux import Host, HostError, Session
 
 app = typer.Typer(
@@ -44,17 +46,38 @@ def _pick(initial_filter: str = "") -> None:
     cfg = config.load()
     session = MuxherdApp(cfg, initial_filter).run()
     if session is not None:
-        tmux.attach(session, cfg.attach)
+        tmux.attach(session, cfg.attach)  # the picker already reopened closed sessions
 
 
 def _find(query: str, cfg: config.Config) -> tuple[list[Session], dict[str, str]]:
     """Resolve 'name' or 'host:name' — exact matches first, then substring."""
     host_name, _, name = query.rpartition(":")
     sessions, errors = tmux.list_all(_hosts(cfg, host_name or None))
-    exact = [s for s in sessions if s.name == name]
-    if exact:
-        return exact, errors
-    return [s for s in sessions if name.lower() in s.name.lower()], errors
+    for pool in ([s for s in sessions if s.live], sessions):  # prefer live over closed
+        exact = [s for s in pool if s.name == name]
+        if exact:
+            return exact, errors
+        partial = [s for s in pool if name.lower() in s.name.lower()]
+        if partial:
+            return partial, errors
+    return [], errors
+
+
+def _open(session: Session, cfg: config.Config) -> None:
+    """Attach to a live session, or reopen a closed one and attach."""
+    if not session.live:
+        try:
+            try:
+                session = tmux.reopen(session, cfg.agents)
+            except tmux.MissingDirectory as e:
+                if not typer.confirm(f"{e.path} no longer exists on {e.host}. Create it?"):
+                    raise typer.Exit(1)
+                session = tmux.reopen(session, cfg.agents, create_dir=True)
+        except HostError as e:
+            err.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+        console.print(f"reopened [cyan]{session.host.name}[/cyan]:[bold]{session.name}[/bold]")
+    tmux.attach(session, cfg.attach)
 
 
 @app.callback(invoke_without_command=True)
@@ -70,10 +93,15 @@ def main_callback(
 
 
 @app.command("ls")
-def ls(host: Annotated[Optional[str], typer.Option("--host", "-H", help="Only this host.")] = None) -> None:
-    """List sessions on all configured hosts."""
+def ls(
+    host: Annotated[Optional[str], typer.Option("--host", "-H", help="Only this host.")] = None,
+    live: Annotated[bool, typer.Option("--live", "-l", help="Hide closed sessions.")] = False,
+) -> None:
+    """List sessions on all configured hosts (closed ones marked ✕)."""
     cfg = config.load()
     sessions, errors = tmux.list_all(_hosts(cfg, host))
+    if live:
+        sessions = [s for s in sessions if s.live]
     _report_errors(errors)
     if not sessions:
         console.print("[dim]no sessions[/dim]")
@@ -83,26 +111,34 @@ def ls(host: Annotated[Optional[str], typer.Option("--host", "-H", help="Only th
     for col in ("", "host", "session", "agent", "idle", "dir"):
         table.add_column(col)
     for s in sessions:
-        table.add_row(
-            "[green]●[/green]" if s.attached else "[dim]○[/dim]",
-            f"[cyan]{s.host.name}[/cyan]",
-            f"[bold]{s.name}[/bold]",
-            s.agent,
-            tmux.ago(s.activity, now),
-            f"[dim]{tmux.short_path(s.path)}[/dim]",
-        )
+        if s.live:
+            table.add_row(
+                "[green]●[/green]" if s.attached else "[dim]○[/dim]",
+                f"[cyan]{s.host.name}[/cyan]",
+                f"[bold]{s.name}[/bold]",
+                s.agent,
+                tmux.ago(s.activity, now),
+                f"[dim]{tmux.short_path(s.path)}[/dim]",
+            )
+        else:
+            table.add_row(
+                "[red dim]✕[/red dim]",
+                *(f"[dim]{v}[/dim]" for v in (
+                    s.host.name, s.name, s.agent, tmux.ago(s.closed_at, now), tmux.short_path(s.directory)
+                )),
+            )
     console.print(table)
 
 
 @app.command("a", hidden=True)
 @app.command("attach")
 def attach(query: Annotated[str, typer.Argument(help="Session name, 'host:name', or part of a name.")]) -> None:
-    """Attach to a session (opens the picker if the query is ambiguous)."""
+    """Attach to a session, reopening it if closed (opens the picker if ambiguous)."""
     cfg = config.load()
     found, errors = _find(query, cfg)
     _report_errors(errors)
     if len(found) == 1:
-        tmux.attach(found[0], cfg.attach)
+        _open(found[0], cfg)
     _pick(query.rpartition(":")[2])
 
 
@@ -128,17 +164,17 @@ def new(
         name = unique_name(f"{agent}-{os.path.basename(directory.rstrip('/'))}", taken)
     try:
         try:
-            name = tmux.new_session(h, name, agent, cfg.agents[agent], directory)
+            session = tmux.create(h, name, agent, cfg.agents, directory)
         except tmux.MissingDirectory as e:
             if not typer.confirm(f"{e.path} doesn't exist on {e.host}. Create it?"):
                 raise typer.Exit(1)
-            name = tmux.new_session(h, name, agent, cfg.agents[agent], directory, create_dir=True)
+            session = tmux.create(h, name, agent, cfg.agents, directory, create_dir=True)
     except HostError as e:
         err.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
-    console.print(f"started [cyan]{h.name}[/cyan]:[bold]{name}[/bold] ({agent})")
+    console.print(f"started [cyan]{h.name}[/cyan]:[bold]{session.name}[/bold] ({agent})")
     if not detach:
-        tmux.attach(Session(h, name, 0, 0, 0, 1, agent, directory), cfg.attach)
+        tmux.attach(session, cfg.attach)
 
 
 @app.command("kill")
@@ -151,9 +187,10 @@ def kill(
     host_name, _, name = query.rpartition(":")
     sessions, errors = tmux.list_all(_hosts(cfg, host_name or None))
     _report_errors(errors)
-    found = [s for s in sessions if s.name == name]
+    found = [s for s in sessions if s.name == name and s.live]
     if not found:
-        err.print(f"[red]no session named {query!r}[/red]")
+        closed = any(s.name == name for s in sessions)
+        err.print(f"[red]no live session named {query!r}[/red]" + (" (it's closed; use `mh forget`)" if closed else ""))
         raise typer.Exit(1)
     if len(found) > 1:
         err.print(f"[red]ambiguous:[/red] {', '.join(s.key for s in found)} — use host:name")
@@ -163,6 +200,43 @@ def kill(
         raise typer.Exit(1)
     tmux.kill_session(s)
     console.print(f"killed {s.key}")
+
+
+@app.command("forget")
+def forget(query: Annotated[str, typer.Argument(help="Closed session name or 'host:name'.")]) -> None:
+    """Remove a closed session from the registry."""
+    cfg = config.load()
+    host_name, _, name = query.rpartition(":")
+    sessions, errors = tmux.list_all(_hosts(cfg, host_name or None))
+    _report_errors(errors)
+    found = [s for s in sessions if s.name == name and not s.live]
+    if len(found) != 1:
+        err.print(f"[red]{'ambiguous' if found else 'no closed session named'} {query!r}[/red]")
+        raise typer.Exit(1)
+    tmux.forget(found[0])
+    console.print(f"forgot {found[0].key}")
+
+
+# Commands run on a session host (locally or by clients over ssh); not for humans.
+host_app = typer.Typer(hidden=True, add_completion=False)
+app.add_typer(host_app, name="_host", hidden=True)
+
+
+@host_app.command("sync")
+def host_sync() -> None:
+    """Record live sessions in this host's registry; print live + closed as JSON."""
+    try:
+        print(json.dumps(tmux.host_sync()))
+    except HostError as e:
+        err.print(str(e))
+        raise typer.Exit(1)
+
+
+@host_app.command("forget")
+def host_forget(name: str) -> None:
+    if not registry.forget(name):
+        err.print(f"no closed session named {name!r}")
+        raise typer.Exit(1)
 
 
 @app.command("init")
@@ -197,8 +271,11 @@ def hosts() -> None:
     console.print(f"[dim]config: {config.CONFIG_PATH}{'' if config.CONFIG_PATH.exists() else ' (missing, using defaults)'}[/dim]")
     for h in _hosts(cfg):
         try:
-            n = len(tmux.list_sessions(h))
-            console.print(f"[green]✓[/green] [cyan]{h.name}[/cyan] ({h.target}) — {n} sessions")
+            sessions = tmux.list_sessions(h)
+            live = sum(s.live for s in sessions)
+            console.print(
+                f"[green]✓[/green] [cyan]{h.name}[/cyan] ({h.target}) — {live} live, {len(sessions) - live} closed"
+            )
         except HostError as e:
             console.print(f"[red]✗[/red] [cyan]{h.name}[/cyan] ({h.target}) — {e}")
 

@@ -15,14 +15,15 @@ from textual.widgets import DataTable, Footer, Input, Label, Select, Static
 from textual.worker import get_current_worker
 
 from . import tmux
-from .config import Config
+from .config import Agent, Config
 from .tmux import Host, HostError, MissingDirectory, Session
 
 REFRESH_SECONDS = 2.0
 
 
 def matches(session: Session, query: str) -> bool:
-    hay = f"{session.key} {session.agent} {session.path}".lower()
+    state = "live" if session.live else "closed"
+    hay = f"{session.key} {session.agent} {session.path} {session.directory} {state}".lower()
     return all(tok in hay for tok in query.lower().split())
 
 
@@ -43,7 +44,7 @@ class FilterInput(Input):
         Binding("pageup", "app.cursor(-10)", show=False),
         Binding("pagedown", "app.cursor(10)", show=False),
         Binding("enter", "app.attach", "attach"),
-        Binding("ctrl+x", "app.kill", "kill"),
+        Binding("ctrl+x", "app.kill", "kill/forget"),
         Binding("escape", "app.escape", "clear/quit"),
     ]
 
@@ -139,6 +140,7 @@ class MuxherdApp(App[Session | None]):
     """
     BINDINGS = [
         Binding("ctrl+n", "new", "new"),
+        Binding("ctrl+t", "toggle_closed", "closed"),
         Binding("ctrl+r", "refresh", "refresh"),
         Binding("ctrl+p", "toggle_preview", "preview"),
         Binding("escape", "escape", "quit", show=False),
@@ -153,6 +155,7 @@ class MuxherdApp(App[Session | None]):
         self.shown: list[Session] = []
         self.errors: dict[str, str] = {}
         self.loaded = False
+        self.show_closed = True
         self.initial_filter = initial_filter
 
     def compose(self) -> ComposeResult:
@@ -196,20 +199,29 @@ class MuxherdApp(App[Session | None]):
         table = self.query_one(DataTable)
         current = self.selected.key if self.selected else None
         query = self.query_one(FilterInput).value
-        self.shown = [s for s in self.sessions if matches(s, query)]
+        self.shown = [s for s in self.sessions if (s.live or self.show_closed) and matches(s, query)]
         now = time.time()
         table.clear()
         for s in self.shown:
-            dot = Text("●", style="green") if s.attached else Text("○", style="dim")
-            table.add_row(
-                dot,
-                Text(s.host.name, style="cyan"),
-                Text(s.name, style="bold"),
-                s.agent,
-                tmux.ago(s.activity, now),
-                Text(tmux.short_path(s.path), style="dim"),
-                key=s.key,
-            )
+            if s.live:
+                row = (
+                    Text("●", style="green") if s.attached else Text("○", style="dim"),
+                    Text(s.host.name, style="cyan"),
+                    Text(s.name, style="bold"),
+                    s.agent,
+                    tmux.ago(s.activity, now),
+                    Text(tmux.short_path(s.path), style="dim"),
+                )
+            else:
+                row = (
+                    Text("✕", style="red dim"),
+                    Text(s.host.name, style="dim"),
+                    Text(s.name, style="dim"),
+                    Text(s.agent, style="dim"),
+                    Text(tmux.ago(s.closed_at, now), style="dim"),
+                    Text(tmux.short_path(s.directory), style="dim"),
+                )
+            table.add_row(*row, key=s.key)
         keys = [s.key for s in self.shown]
         if current in keys:
             table.move_cursor(row=keys.index(current), animate=False)
@@ -217,7 +229,12 @@ class MuxherdApp(App[Session | None]):
             table.move_cursor(row=0, animate=False)
 
     def _render_status(self) -> None:
-        parts = [Text("muxherd", style="bold"), Text(f"  {len(self.shown)}/{len(self.sessions)} sessions  ")]
+        live = sum(s.live for s in self.sessions)
+        closed = len(self.sessions) - live
+        counts = f"  {live} live · {closed} closed{'' if self.show_closed else ' (hidden)'}"
+        if self.query_one(FilterInput).value:
+            counts += f" · {len(self.shown)} shown"
+        parts = [Text("muxherd", style="bold"), Text(counts + "  ")]
         for h in self.hosts:
             ok = h.name not in self.errors
             parts.append(Text(f" {h.name} {'✓' if ok else '✗'}", style="green" if ok else "red"))
@@ -232,6 +249,19 @@ class MuxherdApp(App[Session | None]):
         session = self.selected
         if session is None:
             preview.update(Text("no sessions — ctrl+n to start one" if self.loaded else "", style="dim"))
+            return
+        if not session.live:
+            agent = self.config.agents.get(session.agent, Agent())
+            command = tmux.resume_command(agent, session.agent_id)[0] or "(shell)"
+            preview.update(
+                Text.assemble(
+                    (f"closed {tmux.ago(session.closed_at)} ago", "bold"),
+                    " — enter reopens it, ctrl+x forgets it\n\n",
+                    ("  dir    ", "dim"), tmux.short_path(session.directory), "\n",
+                    ("  agent  ", "dim"), session.agent or "shell", "\n",
+                    ("  runs   ", "dim"), command,
+                )
+            )
             return
         self._fetch_preview(session, max(preview.size.height, 5))
 
@@ -270,8 +300,37 @@ class MuxherdApp(App[Session | None]):
             table.move_cursor(row=row, animate=False)
 
     def action_attach(self) -> None:
-        if self.selected:
-            self.exit(self.selected)
+        session = self.selected
+        if session is None:
+            return
+        if session.live:
+            self.exit(session)
+        else:
+            self._reopen(session)
+
+    @work(thread=True)
+    def _reopen(self, session: Session, create_dir: bool = False) -> None:
+        try:
+            reopened = tmux.reopen(session, self.config.agents, create_dir=create_dir)
+        except MissingDirectory as e:
+            def done(ok: bool | None) -> None:
+                if ok:
+                    self._reopen(session, create_dir=True)
+
+            self.call_from_thread(
+                self.push_screen, ConfirmScreen(f"[b]{e.path}[/b] no longer exists on [b]{e.host}[/b].\nCreate it?"), done
+            )
+            return
+        except HostError as e:
+            self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
+            return
+        self.call_from_thread(self.exit, reopened)
+
+    def action_toggle_closed(self) -> None:
+        self.show_closed = not self.show_closed
+        self._render_table()
+        self._render_status()
+        self._load_preview()
 
     def action_escape(self) -> None:
         f = self.query_one(FilterInput)
@@ -294,12 +353,19 @@ class MuxherdApp(App[Session | None]):
             if ok:
                 self._kill(session)
 
-        self.push_screen(ConfirmScreen(f"Kill session [b]{session.key}[/b]?"), done)
+        if session.live:
+            message = f"Kill session [b]{session.key}[/b]?\nIt stays in the list as closed, so you can reopen it."
+        else:
+            message = f"Forget closed session [b]{session.key}[/b]?"
+        self.push_screen(ConfirmScreen(message), done)
 
     @work(thread=True)
     def _kill(self, session: Session) -> None:
         try:
-            tmux.kill_session(session)
+            if session.live:
+                tmux.kill_session(session)
+            else:
+                tmux.forget(session)
         except HostError as e:
             self.call_from_thread(self.notify, str(e), severity="error")
         self.call_from_thread(self.action_refresh)
@@ -319,9 +385,8 @@ class MuxherdApp(App[Session | None]):
         base = spec["name"] or f"{spec['agent']}-{os.path.basename(spec['dir'].rstrip('/')) or 'home'}"
         name = unique_name(base, taken) if not spec["name"] else tmux.sanitize(base)
         try:
-            name = tmux.new_session(
-                host, name, spec["agent"], self.config.agents.get(spec["agent"], ""), spec["dir"],
-                create_dir=spec.get("create_dir", False),
+            session = tmux.create(
+                host, name, spec["agent"], self.config.agents, spec["dir"], create_dir=spec.get("create_dir", False)
             )
         except MissingDirectory as e:
             self.call_from_thread(self._confirm_mkdir, spec, e)
@@ -329,7 +394,6 @@ class MuxherdApp(App[Session | None]):
         except HostError as e:
             self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
             return
-        session = Session(host, name, 0, 0, 0, 1, spec["agent"], spec["dir"])
         self.call_from_thread(self.exit, session)
 
     def _confirm_mkdir(self, spec: dict, e: MissingDirectory) -> None:

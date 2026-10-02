@@ -157,6 +157,18 @@ command palette → "Shell Command: Install 'code' command in PATH"). The first 
 installs its server on the host automatically. To use another editor, change `[editor]`
 in the config, e.g. Zed: `remote = "zed ssh://{host}{path}"`.
 
+## Versioning
+
+Versions follow semver and come from git tags (`vX.Y.Z`) via `hatch-vcs`, with no version
+string in the source. A build of a tagged commit is that version. Later commits build as
+dev versions like `0.2.1.dev3+g1a2b3c4` (3 commits past `v0.2.0`), so `mh --version`
+shows exactly what a machine is running.
+
+```sh
+make version              # what this checkout builds as
+make release VERSION=0.2.0  # tag, push and create a GitHub release (clean tree required)
+```
+
 ## Config
 
 `~/.config/muxherd/config.toml` (override with `$MUXHERD_CONFIG`):

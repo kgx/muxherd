@@ -1,6 +1,6 @@
 [project]
 name = "muxherd"
-version = "0.1.0"
+dynamic = ["version"]  # from git tags (vX.Y.Z) via hatch-vcs
 description = "Herd AI coding agents (Claude Code, Codex, Grok) running in tmux across your tailnet"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,5 +15,10 @@ muxherd = "muxherd.cli:main"
 mh = "muxherd.cli:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+# Used when building without git metadata (e.g. from a source archive).
+fallback-version = "0.0.0"

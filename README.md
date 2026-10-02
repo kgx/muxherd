@@ -12,7 +12,7 @@ sessions on one or more machines, and jump between them from anywhere on your ta
  ✕  excelsior  grok-site        grok    1h    ~/develop/site
 ──────────────────────────────────────────────────────────────
  (live preview of the selected session's pane)
- ⏎ attach  ^x kill/forget  esc clear/quit  ^n new  ^t closed  ^r refresh  ^p preview
+ ^e editor  ^r rename  ⏎ attach  ^x kill/forget  esc clear/quit  ^n new  ^t closed  ^p preview
 ```
 
 - **One picker for every host.** muxherd lists tmux sessions on this machine and on any

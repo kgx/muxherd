@@ -368,6 +368,32 @@ def attach_argv(session: Session, mode: str = "mosh") -> list[str]:
     return ["ssh", "-t", host.target, REMOTE_PATH + REMOTE_TERM_FIX + shlex.join(["tmux", "attach-session", "-t", target])]
 
 
+def project_dir(session: Session) -> str:
+    """The session's project directory: where it was started, else where its pane is."""
+    return session.directory or session.path or "~"
+
+
+# Login shell in a directory; falls back to $HOME if the directory is gone.
+_SHELL_SCRIPT = 'cd -- "$1" 2>/dev/null || { echo "muxherd: $1 not found, staying in $HOME" >&2; cd; }; exec "${SHELL:-/bin/sh}" -l'
+
+
+def shell_argv(session: Session, mode: str = "mosh") -> list[str]:
+    """Ephemeral login shell in the session's project directory, on its host (no tmux)."""
+    host, directory = session.host, project_dir(session)
+    inner = ["sh", "-c", _SHELL_SCRIPT, "sh", directory]
+    if host.is_local:
+        return inner
+    if mode == "mosh" and shutil.which("mosh"):
+        return ["mosh", host.target, "--", *inner]
+    return ["ssh", "-t", host.target, REMOTE_TERM_FIX + shlex.join(inner)]
+
+
+def open_shell(session: Session, mode: str = "mosh") -> None:
+    """Replace this process with the shell."""
+    argv = shell_argv(session, mode)
+    os.execvp(argv[0], argv)
+
+
 def has_terminfo(term: str) -> bool:
     if not shutil.which("infocmp"):
         return True  # can't tell; leave $TERM alone

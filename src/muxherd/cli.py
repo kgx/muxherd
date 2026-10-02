@@ -41,13 +41,17 @@ def _report_errors(errors: dict[str, str]) -> None:
         err.print(f"[yellow]warning:[/yellow] {msg}")
 
 
-def _pick(initial_filter: str = "", editor_mode: bool = False) -> None:
+def _pick(initial_filter: str = "", mode: str = "attach") -> None:
     from .tui import MuxherdApp
 
     cfg = config.load()
-    session = MuxherdApp(cfg, initial_filter, editor_mode=editor_mode).run()
-    if session is not None:
-        tmux.attach(session, cfg.attach)  # the picker already reopened closed sessions
+    picker = MuxherdApp(cfg, initial_filter, mode=mode)
+    session = picker.run()
+    if session is None:
+        return
+    if picker.exit_action == "shell":
+        tmux.open_shell(session, cfg.attach)
+    tmux.attach(session, cfg.attach)  # the picker already reopened closed sessions
 
 
 def _find(query: str, cfg: config.Config) -> tuple[list[Session], dict[str, str]]:
@@ -158,7 +162,19 @@ def code(query: Annotated[Optional[str], typer.Argument(help="Session name, 'hos
                 raise typer.Exit(1)
             console.print(f"[dim]{shlex.join(argv)}[/dim]")
             return
-    _pick(query.rpartition(":")[2] if query else "", editor_mode=True)
+    _pick(query.rpartition(":")[2] if query else "", mode="editor")
+
+
+@app.command("sh")
+def sh(query: Annotated[Optional[str], typer.Argument(help="Session name, 'host:name', or part of a name.")] = None) -> None:
+    """Open a throwaway shell in a session's project directory, on its host (no tmux)."""
+    cfg = config.load()
+    if query:
+        found, errors = _find(query, cfg)
+        _report_errors(errors)
+        if len(found) == 1:
+            tmux.open_shell(found[0], cfg.attach)
+    _pick(query.rpartition(":")[2] if query else "", mode="shell")
 
 
 @app.command("new")

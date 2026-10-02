@@ -46,6 +46,7 @@ class FilterInput(Input):
         Binding("enter", "app.attach", "attach"),
         Binding("ctrl+x", "app.kill", "kill/forget"),
         Binding("ctrl+e", "app.edit", "editor"),
+        Binding("ctrl+o", "app.shell", "shell"),
         Binding("ctrl+r", "app.rename", "rename"),
         Binding("escape", "app.escape", "clear/quit"),
     ]
@@ -55,6 +56,15 @@ class EditorFilterInput(FilterInput):
     """Filter box for `mh code`: enter opens the editor instead of attaching."""
 
     BINDINGS = [Binding("enter", "app.attach", "open in editor")]
+
+
+class ShellFilterInput(FilterInput):
+    """Filter box for `mh sh`: enter opens a shell in the project directory."""
+
+    BINDINGS = [Binding("enter", "app.attach", "open shell")]
+
+
+FILTER_INPUTS = {"attach": FilterInput, "editor": EditorFilterInput, "shell": ShellFilterInput}
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -308,9 +318,12 @@ class MuxherdApp(App[Session | None]):
         Binding("ctrl+c", "quit", show=False, priority=True),
     ]
 
-    def __init__(self, config: Config, initial_filter: str = "", editor_mode: bool = False) -> None:
+    def __init__(self, config: Config, initial_filter: str = "", mode: str = "attach") -> None:
         super().__init__()
-        self.editor_mode = editor_mode  # enter opens the editor and exits (`mh code`)
+        # What enter does: "attach", "editor" (`mh code`) or "shell" (`mh sh`).
+        self.mode = mode
+        # How the app ended, read by the CLI: "attach" or "shell" (with the session as return value).
+        self.exit_action = "attach"
         self.config = config
         self.hosts = [Host(name, target) for name, target in config.hosts.items()]
         self.sessions: list[Session] = []
@@ -323,8 +336,7 @@ class MuxherdApp(App[Session | None]):
 
     def compose(self) -> ComposeResult:
         yield Static("loading…", id="status")
-        filter_cls = EditorFilterInput if self.editor_mode else FilterInput
-        yield filter_cls(self.initial_filter, placeholder="type to filter sessions…", id="filter")
+        yield FILTER_INPUTS[self.mode](self.initial_filter, placeholder="type to filter sessions…", id="filter")
         table = DataTable(id="table", cursor_type="row", zebra_stripes=False)
         table.can_focus = False
         yield table
@@ -475,9 +487,12 @@ class MuxherdApp(App[Session | None]):
         session = self.selected
         if session is None:
             return
-        if self.editor_mode:
+        if self.mode == "editor":
             if self._open_editor(session):
                 self.exit(None)
+            return
+        if self.mode == "shell":
+            self.action_shell()
             return
         if session.live:
             self.exit(session)
@@ -501,6 +516,11 @@ class MuxherdApp(App[Session | None]):
             self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
             return
         self.call_from_thread(self.exit, reopened)
+
+    def action_shell(self) -> None:
+        if self.selected:
+            self.exit_action = "shell"
+            self.exit(self.selected)
 
     def action_edit(self) -> None:
         if self.selected:

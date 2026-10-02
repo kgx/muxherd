@@ -12,7 +12,7 @@ sessions on one or more machines, and jump between them from anywhere on your ta
  ✕  excelsior  grok-site        grok    1h    ~/develop/site
 ──────────────────────────────────────────────────────────────
  (live preview of the selected session's pane)
- ^e editor  ^r rename  ⏎ attach  ^x kill/forget  esc clear/quit  ^n new  ^t closed  ^p preview
+ ^e editor  ^o shell  ^r rename  ⏎ attach  ^x kill/forget  esc clear/quit  ^n new  ^t closed  ^p preview
 ```
 
 - **One picker for every host.** muxherd lists tmux sessions on this machine and on any
@@ -87,6 +87,7 @@ mh                       # picker
 mh a infra               # attach (or reopen if closed): name, host:name, or unique substring
 
 mh code infra            # open the session's directory in VS Code (no name: picker)
+mh sh infra              # throwaway shell in the session's project dir on its host (no name: picker)
 mh new -a codex          # new codex session in cwd, named codex-<dir>, then attach
 mh new api -a claude -H excelsior -d ~/develop/api -D   # create detached on a host
 mh ls                    # list everything, closed sessions marked ✕ (--live to hide them)
@@ -108,6 +109,7 @@ mh hosts                 # reachability check
 | ctrl+x         | kill a live session / forget a closed one (with confirm)   |
 | ctrl+t         | show/hide closed sessions                                  |
 | ctrl+e         | open the session's directory in your editor                |
+| ctrl+o         | throwaway shell in the session's project directory         |
 | ctrl+p         | toggle preview pane                                        |
 | F5             | refresh now (it also refreshes every 2s)                   |
 | esc            | clear filter, then quit                                    |
@@ -123,6 +125,14 @@ How attach works:
 - **Local session, run inside tmux:** `tmux switch-client`, so tmux never nests.
 - **Remote session:** `mosh <host> -- tmux attach`, falling back to `ssh -t` when mosh
   isn't installed or the config sets `attach = "ssh"`.
+
+## Throwaway shells
+
+`ctrl+o` in the picker, or `mh sh [name]`, opens a plain login shell in the session's
+project directory (where it was started) on the session's host. It runs over mosh for
+remote hosts, or ssh if mosh isn't available. It's deliberately **not** a tmux session:
+nothing is registered and `exit` closes it for good. It's useful for a quick `git status`
+or test run next to an agent without disturbing its session.
 
 ## Editor
 

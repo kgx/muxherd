@@ -545,13 +545,19 @@ def has_terminfo(term: str) -> bool:
     return subprocess.run(["infocmp", term], capture_output=True).returncode == 0
 
 
+def attach_env(session: Session) -> dict[str, str]:
+    """Environment for attaching: tmux refuses a local $TERM without a terminfo entry."""
+    env = dict(os.environ)
+    term = env.get("TERM", "")
+    if session.host.is_local and term and not has_terminfo(term):
+        env["TERM"] = FALLBACK_TERM
+    return env
+
+
 def attach(session: Session, mode: str = "mosh") -> None:
     """Replace this process with the attach command."""
     argv = attach_argv(session, mode)
-    term = os.environ.get("TERM", "")
-    if session.host.is_local and term and not has_terminfo(term):
-        os.environ["TERM"] = FALLBACK_TERM
-    os.execvp(argv[0], argv)
+    os.execvpe(argv[0], argv, attach_env(session))
 
 
 def ago(ts: int, now: float | None = None) -> str:

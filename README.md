@@ -58,7 +58,7 @@ mh init                         # config with this machine as "local"
 brew install mosh               # or apt install mosh
 mh init --no-local -r devbox # only show the remote host's sessions
 # or keep local sessions too:   mh init -r devbox
-mh hosts                        # check connectivity
+mh doctor                       # check versions, tmux settings and the clipboard path
 ```
 
 `-r NAME` uses `NAME` as the ssh target (with MagicDNS that's the tailnet hostname).
@@ -99,6 +99,8 @@ mh forget api            # remove a closed session from the registry
 mh rename api api-v2     # rename (live or closed; host:name works too)
 mh chdir api ~/src/api-v2   # change a session's project directory
 mh hosts                 # reachability check
+mh doctor                # check this machine and every host; suggests fixes (changes nothing)
+mh doctor --clipboard    # also test copy → your local clipboard through the real attach
 ```
 
 ### Picker keys
@@ -135,6 +137,64 @@ How attach works:
 - **Local session, run inside tmux:** `tmux switch-client`, so tmux never nests.
 - **Remote session:** `mosh <host> -- tmux attach`, falling back to `ssh -t` when mosh
   isn't installed or the config sets `attach = "ssh"`.
+
+## Checking your setup: `mh doctor`
+
+`mh doctor` checks this machine and every configured host, then prints ✓ / ⚠ / ✗ with a fix
+for anything that's off. It never changes anything.
+
+- **This machine:** ssh, mosh 1.4+ (needed for clipboard forwarding), the `[editor]`
+  command, and whether your `$TERM` has a terminfo entry.
+- **Each host:**
+  - how fast ssh connects;
+  - whether the muxherd version matches yours;
+  - tmux and mosh-server versions;
+  - the tmux settings below, read by starting a private tmux server with the host's real
+    config;
+  - a **clipboard check**: in that private server it copies text the way a mouse drag
+    does and records what tmux sends to the terminal. This tests behaviour rather than
+    guessing from version numbers, which matters because the right clipboard setting
+    depends on the tmux version, its terminal library, and mosh.
+
+`mh doctor --clipboard` goes one step further. It attaches you to a throwaway session on
+each host, copies a test string there, and checks whether it arrived on this machine's
+clipboard, through tmux, mosh and your terminal. It reads the clipboard itself where it can
+(`pbpaste`, `wl-paste`, `xclip`); otherwise it asks you to paste.
+
+### Recommended tmux settings
+
+On each host, in `~/.tmux.conf`. `mh doctor` prints only the lines a host is missing.
+
+```tmux
+# Touchpad/mouse: scroll through history, drag to select and copy
+set -g mouse on
+# Let agents (Claude Code, Codex, editors) know when their pane gains or loses focus
+set -g focus-events on
+# Agents are chatty; the default is 2000 lines
+set -g history-limit 50000
+# Send copies to your terminal's clipboard (OSC 52), and let apps in tmux do the same
+set -g set-clipboard on
+# Name the system clipboard explicitly. tmux leaves it blank, which doesn't reach the
+# clipboard through mosh. %p1%.0s must stay: newer ncurses rejects formats that skip the
+# first parameter, and tmux then silently sends nothing.
+set -as terminal-overrides ',xterm*:Ms=\E]52;c%p1%.0s;%p2%s\7'
+```
+
+Optional: keep the mouse selection highlighted after releasing (it's still copied; `q` or
+`Esc` leaves copy mode):
+
+```tmux
+bind -T copy-mode    MouseDragEnd1Pane send -X copy-pipe-no-clear
+bind -T copy-mode-vi MouseDragEnd1Pane send -X copy-pipe-no-clear
+```
+
+Apply with `tmux source-file ~/.tmux.conf`, then detach and reattach: tmux reads terminal
+settings when a client attaches. With the mouse on, hold Shift (kitty) or Option
+(iTerm/Terminal) while dragging to use your terminal's own selection instead.
+
+Your terminal must accept clipboard writes over OSC 52. kitty, WezTerm, iTerm2 (enable
+"Applications in terminal may access clipboard"), Ghostty, Windows Terminal and recent
+Alacritty and foot do. mosh must be 1.4+ on both ends.
 
 ## Throwaway shells
 

@@ -10,6 +10,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from . import __version__, config, editor, registry, tmux
@@ -340,6 +341,14 @@ def host_rename(old: str, new: str) -> None:
         raise typer.Exit(1)
 
 
+@host_app.command("doctor")
+def host_doctor() -> None:
+    """Facts about this host for `mh doctor` on a client, as JSON."""
+    from . import doctor
+
+    print(json.dumps(doctor.host_facts()))
+
+
 @host_app.command("chdir")
 def host_chdir(name: str, directory: str, create: bool = False) -> None:
     try:
@@ -356,6 +365,48 @@ def host_chdir(name: str, directory: str, create: bool = False) -> None:
 def host_forget(name: str) -> None:
     if not registry.forget(name):
         err.print(f"no closed session named {name!r}")
+        raise typer.Exit(1)
+
+
+@app.command("doctor")
+def doctor_cmd(
+    host: Annotated[str | None, typer.Option("--host", "-H", help="Only check this host.")] = None,
+    clipboard: Annotated[
+        bool, typer.Option("--clipboard", "-c", help="Also test copy → your clipboard live, through the real attach.")
+    ] = False,
+) -> None:
+    """Check this machine and each host (versions, tmux settings, clipboard) and suggest fixes."""
+    from . import doctor
+
+    cfg = config.load()
+    icons = {"ok": "[green]✓[/green]", "warn": "[yellow]⚠[/yellow]", "fail": "[red]✗[/red]", "skip": "[dim]–[/dim]"}
+    failed = False
+
+    def show(title: str, checks: list) -> None:
+        nonlocal failed
+        console.print(f"\n[bold]{title}[/bold]")
+        for c in checks:
+            failed |= c.status == "fail"
+            console.print(f"  {icons[c.status]} {c.name:<15} {escape(c.detail)}")
+            if c.fix and c.status in ("warn", "fail"):
+                console.print(f"    [dim]→ {escape(c.fix)}[/dim]")
+
+    show(f"this machine ({config.local_hostname()}, muxherd {__version__})", doctor.client_checks(cfg))
+    for h in _hosts(cfg, host):
+        with console.status(f"checking {h.name}…"):
+            checks, missing = doctor.host_checks(h, cfg)
+        show(f"{h.name} ({'this machine' if h.is_local else h.target})", checks)
+        if missing:
+            console.print(
+                f"    [dim]→ add to ~/.tmux.conf on {h.name}, then `tmux source-file ~/.tmux.conf` and reattach:[/dim]"
+            )
+            for line in missing:
+                console.print(f"        {line}", markup=False, highlight=False)
+        if clipboard:
+            show(f"{h.name}: live clipboard test", [doctor.clipboard_roundtrip(h, cfg)])
+    if not clipboard:
+        console.print("\n[dim]To test copying all the way to this machine's clipboard: mh doctor --clipboard[/dim]")
+    if failed:
         raise typer.Exit(1)
 
 
@@ -382,6 +433,7 @@ def init(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(config.render(hosts))
     console.print(f"wrote {path}")
+    console.print("[dim]next: `mh doctor` checks this machine and each host, and suggests fixes[/dim]")
 
 
 @app.command("hosts")

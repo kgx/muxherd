@@ -128,6 +128,7 @@ excelsior = "local"        # this machine
 [agents.claude]
 start = "claude --session-id {id}"   # typed into the new session's shell
 resume = "claude --resume {id}"      # typed when reopening a closed session
+resumable = "ls ~/.claude/projects/*/{id}.jsonl >/dev/null 2>&1"  # check run before resuming
 
 [agents.codex]
 start = "codex"
@@ -142,7 +143,10 @@ start = ""
 
 `{id}` becomes a fresh UUID when a session starts. muxherd stores it, and `resume` uses
 it to pick up the same conversation. If an agent has no `resume`, or the session has no
-stored ID, reopening runs `start` instead. A plain string (`yolo = "claude --dangerously-skip-permissions"`)
+stored ID, reopening runs `start` instead. `resumable` is an optional shell check that
+runs on the session's host first. If it fails, reopening runs `start` with the same ID.
+Claude Code only saves a conversation once you send a message, so this covers a session
+where you never typed anything. A plain string (`yolo = "claude --dangerously-skip-permissions"`)
 is shorthand for `start` only.
 
 ## Session registry

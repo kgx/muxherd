@@ -250,23 +250,15 @@ class MuxherdApp(App[Session | None]):
         if session is None:
             preview.update(Text("no sessions — ctrl+n to start one" if self.loaded else "", style="dim"))
             return
-        if not session.live:
-            agent = self.config.agents.get(session.agent, Agent())
-            command = tmux.resume_command(agent, session.agent_id)[0] or "(shell)"
-            preview.update(
-                Text.assemble(
-                    (f"closed {tmux.ago(session.closed_at)} ago", "bold"),
-                    " — enter reopens it, ctrl+x forgets it\n\n",
-                    ("  dir    ", "dim"), tmux.short_path(session.directory), "\n",
-                    ("  agent  ", "dim"), session.agent or "shell", "\n",
-                    ("  runs   ", "dim"), command,
-                )
-            )
-            return
         self._fetch_preview(session, max(preview.size.height, 5))
 
     @work(thread=True, exclusive=True, group="preview")
     def _fetch_preview(self, session: Session, height: int) -> None:
+        if not session.live:
+            text = self._closed_info(session)
+            if not get_current_worker().is_cancelled:
+                self.call_from_thread(self._show_preview, session.key, text)
+            return
         try:
             out = tmux.capture(session)
             # Agent TUIs leave lots of trailing blank lines; show the last screenful of content.
@@ -276,6 +268,21 @@ class MuxherdApp(App[Session | None]):
             text = Text(str(e), style="red")
         if not get_current_worker().is_cancelled:
             self.call_from_thread(self._show_preview, session.key, text)
+
+    def _closed_info(self, session: Session) -> Text:
+        agent = self.config.agents.get(session.agent, Agent())
+        try:
+            # Runs the agent's `resumable` check on the host, so this shows what enter will do.
+            command = tmux.resume_command(agent, session.agent_id, session.host)[0] or "(shell)"
+        except HostError as e:
+            command = f"? ({e})"
+        return Text.assemble(
+            (f"closed {tmux.ago(session.closed_at)} ago", "bold"),
+            " — enter reopens it, ctrl+x forgets it\n\n",
+            ("  dir    ", "dim"), tmux.short_path(session.directory), "\n",
+            ("  agent  ", "dim"), session.agent or "shell", "\n",
+            ("  runs   ", "dim"), command,
+        )
 
     def _show_preview(self, key: str, text: Text) -> None:
         if self.selected and self.selected.key == key:

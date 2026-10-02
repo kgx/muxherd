@@ -261,11 +261,22 @@ def start_command(agent: Agent) -> tuple[str, str]:
     return agent.start.replace("{id}", agent_id), agent_id
 
 
-def resume_command(agent: Agent, agent_id: str) -> tuple[str, str]:
-    """(command, agent_id) for reopening a closed session."""
+def resume_command(agent: Agent, agent_id: str, host: Host | None = None) -> tuple[str, str]:
+    """(command, agent_id) for reopening a closed session.
+
+    With a host, the agent's `resumable` check runs there first; without one (e.g. for
+    a preview) the resume command is assumed to work.
+    """
     if agent.resume and ("{id}" not in agent.resume or agent_id):
-        return agent.resume.replace("{id}", agent_id), agent_id
+        if host is None or not agent.resumable or _check(host, agent.resumable.replace("{id}", agent_id)):
+            return agent.resume.replace("{id}", agent_id), agent_id
+        if agent_id and "{id}" in agent.start:
+            return agent.start.replace("{id}", agent_id), agent_id  # nothing to resume: start fresh, same id
     return start_command(agent)
+
+
+def _check(host: Host, shell_cmd: str) -> bool:
+    return host.run(["sh", "-c", shell_cmd]).returncode == 0
 
 
 def create(host: Host, name: str, agent_name: str, agents: dict[str, Agent], directory: str, create_dir: bool = False) -> Session:
@@ -275,7 +286,7 @@ def create(host: Host, name: str, agent_name: str, agents: dict[str, Agent], dir
 
 def reopen(session: Session, agents: dict[str, Agent], create_dir: bool = False) -> Session:
     """Start a closed session again under the same name, resuming the agent if possible."""
-    command, agent_id = resume_command(agents.get(session.agent, Agent()), session.agent_id)
+    command, agent_id = resume_command(agents.get(session.agent, Agent()), session.agent_id, session.host)
     return new_session(
         session.host, session.name, session.agent, command, session.directory or "~",
         agent_id=agent_id, create_dir=create_dir,

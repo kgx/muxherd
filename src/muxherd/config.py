@@ -23,10 +23,19 @@ class Agent:
     # Command used to reopen a closed session. "{id}" is the stored UUID; if the session
     # has none (e.g. not started by muxherd), `start` is used instead.
     resume: str = ""
+    # Optional shell check run on the session's host before resuming; if it fails (e.g.
+    # the conversation was never used, so there's nothing to resume) `start` is used
+    # with the same id.
+    resumable: str = ""
 
 
 DEFAULT_AGENTS = {
-    "claude": Agent("claude --session-id {id}", "claude --resume {id}"),
+    # Claude Code only writes a conversation file once you send a message.
+    "claude": Agent(
+        "claude --session-id {id}",
+        "claude --resume {id}",
+        "ls ~/.claude/projects/*/{id}.jsonl >/dev/null 2>&1",
+    ),
     "codex": Agent("codex", "codex resume --last"),
     "grok": Agent("grok"),
     "shell": Agent(),
@@ -49,7 +58,11 @@ class Config:
 def _agent(value: str | dict) -> Agent:
     if isinstance(value, str):
         return Agent(start=value)
-    return Agent(start=str(value.get("start", "")), resume=str(value.get("resume", "")))
+    return Agent(
+        start=str(value.get("start", "")),
+        resume=str(value.get("resume", "")),
+        resumable=str(value.get("resumable", "")),
+    )
 
 
 def load() -> Config:
@@ -81,9 +94,12 @@ def render(hosts: dict[str, str], attach: str = "mosh") -> str:
         "# Agents offered when creating a session.",
         "#   start  = command typed into the session's shell; {id} becomes a fresh UUID",
         "#   resume = command used to reopen a closed session; {id} is that same UUID",
+        "#   resumable = optional shell check on the host; if it fails, reopen runs start instead",
     ]
     for name, agent in DEFAULT_AGENTS.items():
         lines += ["", f"[agents.{name}]", f"start = {q(agent.start)}"]
         if agent.resume:
             lines.append(f"resume = {q(agent.resume)}")
+        if agent.resumable:
+            lines.append(f"resumable = {q(agent.resumable)}")
     return "\n".join(lines) + "\n"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 import time
 from typing import Annotated
 
@@ -41,14 +42,37 @@ def _report_errors(errors: dict[str, str]) -> None:
         err.print(f"[yellow]warning:[/yellow] {msg}")
 
 
-def _pick(initial_filter: str = "", mode: str = "attach") -> None:
+def _pick(initial_filter: str = "", mode: str = "attach", once: bool = False) -> None:
+    """Run the picker. Unless told otherwise, attach and come back to it afterwards."""
     from .tui import MuxherdApp
 
-    cfg = config.load()
-    session = MuxherdApp(cfg, initial_filter, mode=mode).run()
-    if session is not None:
-        # The picker already reopened closed sessions / created shells.
-        tmux.attach(session, cfg.attach)
+    focus = None
+    while True:
+        cfg = config.load()  # pick up settings changed in the picker
+        session = MuxherdApp(cfg, initial_filter, mode=mode, focus_key=focus).run()
+        if session is None:
+            return
+        # The picker already reopened closed sessions / created shells. Inside tmux on the
+        # same host attaching means switching this client to the session, which returns at
+        # once, so there's nothing to come back from: hand over instead.
+        switching = session.host.is_local and bool(os.environ.get("TMUX"))
+        if once or not cfg.ui.return_to_picker or switching:
+            tmux.attach(session, cfg.attach)
+        if not _attach_and_wait(session, cfg.attach):
+            return
+        focus, initial_filter = session.key, ""
+
+
+def _attach_and_wait(session: Session, mode: str) -> bool:
+    """Attach until you detach or the session ends. False if attaching isn't possible."""
+    try:
+        subprocess.run(tmux.attach_argv(session, mode), env=tmux.attach_env(session))
+    except KeyboardInterrupt:
+        pass
+    except FileNotFoundError as e:
+        err.print(f"[red]{e.filename} not found[/red]")
+        return False
+    return True
 
 
 def _find(query: str, cfg: config.Config) -> tuple[list[Session], dict[str, str]]:
@@ -86,12 +110,15 @@ def _open(session: Session, cfg: config.Config) -> None:
 def main_callback(
     ctx: typer.Context,
     version: Annotated[bool, typer.Option("--version", "-V", help="Show version.")] = False,
+    once: Annotated[
+        bool, typer.Option("--once", "-1", help="Exit after attaching instead of returning to the picker.")
+    ] = False,
 ) -> None:
     if version:
         console.print(f"muxherd {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        _pick()
+        _pick(once=once)
 
 
 @app.command("ls")

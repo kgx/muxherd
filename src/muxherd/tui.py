@@ -382,6 +382,10 @@ class SettingsScreen(ModalScreen[UI | None]):
             yield Label("at startup")
             yield Checkbox("show closed sessions", self.ui.show_closed, compact=True, id="opt-show-closed")
             yield Checkbox("show the preview pane", self.ui.preview, compact=True, id="opt-preview")
+            yield Label("after attaching")
+            yield Checkbox(
+                "come back to the picker when I detach", self.ui.return_to_picker, compact=True, id="opt-return"
+            )
             yield Label(f"saved to {tmux.short_path(str(config_mod.CONFIG_PATH))} [ui]", classes="hint", markup=False)
             keys = "[b]ctrl+s[/b] save   [b]tab[/b] next   [b]space[/b] toggle   [b]esc[/b] cancel"
             yield Label(keys, classes="hint")
@@ -395,6 +399,7 @@ class SettingsScreen(ModalScreen[UI | None]):
                 sort=str(self.query_one("#sort", Select).value),
                 show_closed=self.query_one("#opt-show-closed", Checkbox).value,
                 preview=self.query_one("#opt-preview", Checkbox).value,
+                return_to_picker=self.query_one("#opt-return", Checkbox).value,
             )
         )
 
@@ -451,7 +456,9 @@ class MuxherdApp(App[Session | None]):
         Binding("ctrl+c", "quit", show=False, priority=True),
     ]
 
-    def __init__(self, config: Config, initial_filter: str = "", mode: str = "attach") -> None:
+    def __init__(
+        self, config: Config, initial_filter: str = "", mode: str = "attach", focus_key: str | None = None
+    ) -> None:
         super().__init__()
         # What enter does: "attach", "editor" (`mh code`) or "shell" (`mh sh`).
         self.mode = mode
@@ -469,7 +476,8 @@ class MuxherdApp(App[Session | None]):
         self.col_keys: list = []
         self.shown_status: Text | None = None
         self.shown_preview: tuple[str, Text] | None = None
-        self.focus_key: str | None = None  # select this row on the next render (e.g. after rename)
+        # Select this row on the next render (after a rename, or the session you just left).
+        self.focus_key: str | None = focus_key
         self.initial_filter = initial_filter
 
     def compose(self) -> ComposeResult:

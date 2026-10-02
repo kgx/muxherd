@@ -64,6 +64,8 @@ class UI:
     sort: str = "name"
     show_closed: bool = True  # list closed sessions (ctrl+t toggles for the current run)
     preview: bool = True  # show the preview pane (ctrl+p toggles for the current run)
+    # After attaching from the picker, come back to it when you detach or the session ends.
+    return_to_picker: bool = True
 
 
 # Earlier default for `remote`; configs written with it are upgraded on load.
@@ -117,6 +119,7 @@ def load() -> Config:
             sort=sort if sort in SORT_MODES else UI.sort,
             show_closed=bool(ui.get("show_closed", cfg.ui.show_closed)),
             preview=bool(ui.get("preview", cfg.ui.preview)),
+            return_to_picker=bool(ui.get("return_to_picker", cfg.ui.return_to_picker)),
         )
     return cfg
 
@@ -124,7 +127,12 @@ def load() -> Config:
 def save_ui(ui: UI) -> None:
     """Write the [ui] table into the config file, leaving everything else (comments
     included) untouched. Creates the table, or the file, if needed."""
-    values = {"sort": json.dumps(ui.sort), "show_closed": _toml_bool(ui.show_closed), "preview": _toml_bool(ui.preview)}
+    values = {
+        "sort": json.dumps(ui.sort),
+        "show_closed": _toml_bool(ui.show_closed),
+        "preview": _toml_bool(ui.preview),
+        "return_to_picker": _toml_bool(ui.return_to_picker),
+    }
     text = CONFIG_PATH.read_text() if CONFIG_PATH.exists() else ""
     lines = text.splitlines()
     header = next((i for i, line in enumerate(lines) if line.strip() == "[ui]"), None)
@@ -176,6 +184,7 @@ def render(hosts: dict[str, str], attach: str = "mosh") -> str:
         f"sort = {q(UI.sort)}",
         "show_closed = true",
         "preview = true",
+        "return_to_picker = true  # come back to the picker after detaching",
         "",
         "# Agents offered when creating a session.",
         "#   start  = command typed into the session's shell; {id} becomes a fresh UUID",

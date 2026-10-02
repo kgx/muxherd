@@ -87,7 +87,7 @@ covers. To keep sshd off other interfaces entirely, set
 ## Usage
 
 ```sh
-mh                       # picker
+mh                       # picker; after you detach you're back in it (--once to exit instead)
 mh a infra               # attach (or reopen if closed): name, host:name, or unique substring
 mh code infra            # open the session's directory in VS Code (no name: picker)
 mh sh infra              # throwaway shell (own tmux session) in the session's project dir
@@ -118,7 +118,7 @@ mh doctor --clipboard    # also test copy → your local clipboard through the r
 | ctrl+e         | open the session's directory in your editor                |
 | ctrl+o         | throwaway shell (own tmux session) in the project directory |
 | ctrl+p         | toggle preview pane                                        |
-| ctrl+s         | settings: sort order, closed sessions and preview at startup |
+| ctrl+s         | settings: sort, startup defaults, return to picker after detaching |
 | F5             | refresh now (it also refreshes every 2s)                   |
 | esc            | clear filter, then quit                                    |
 
@@ -132,6 +132,12 @@ Each session has a **project directory**: where it was started, unless you chang
 with `ctrl+d` / `mh chdir`. The list shows it, a closed session reopens there, and the
 editor (`ctrl+e`) and throwaway shells (`ctrl+o`) open there. Changing it doesn't move a
 running agent. Claude Code still resumes the same conversation from the new directory.
+
+**Coming back:** after you attach from the picker, detaching (`Ctrl-b d`) or the session
+ending brings you back to the picker, with the session you just left selected. Esc quits.
+Turn this off in settings (`ctrl+s`), with `return_to_picker = false`, or per run with
+`mh --once`. When you run `mh` inside tmux on the same host, picking a session switches
+your tmux client to it instead, which suits the popup below.
 
 How attach works:
 - **Local session, run outside tmux:** `tmux attach`.
@@ -180,6 +186,17 @@ set -g set-clipboard on
 # first parameter, and tmux then silently sends nothing.
 set -as terminal-overrides ',xterm*:Ms=\E]52;c%p1%.0s;%p2%s\7'
 ```
+
+Optional: **jump between sessions without detaching.** `Ctrl-b j` opens the picker in a
+popup over whatever session you're in, and picking one switches straight to it:
+
+```tmux
+bind j display-popup -E -w 90% -h 80% mh
+```
+
+The popup runs `mh` on the host, so it lists that host's sessions (plus any other hosts in
+the host's own muxherd config). `mh` must be on tmux's PATH; use the full path, e.g.
+`~/.local/bin/mh`, if the popup can't find it.
 
 Optional: keep the mouse selection highlighted after releasing (it's still copied; `q` or
 `Esc` leaves copy mode):
@@ -260,6 +277,7 @@ remote = "code -n --folder-uri {uri}"
 sort = "name"              # or "recent"; live sessions are always listed first
 show_closed = true         # list closed sessions (ctrl+t toggles for the current run)
 preview = true             # show the preview pane (ctrl+p toggles for the current run)
+return_to_picker = true    # come back to the picker after detaching (mh --once overrides)
 
 [agents.claude]
 start = "claude --session-id {id}"   # typed into the new session's shell

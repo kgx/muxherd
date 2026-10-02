@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from conftest import requires_tmux
 from textual.widgets import DataTable, Select
 
@@ -89,3 +90,71 @@ def test_refresh_updates_cells_in_place_and_settings_resort(local_host, projects
 
     assert asyncio.run(run()) == "recent"
     assert config.load().ui.sort == "recent"
+
+
+@requires_tmux
+def test_picker_starts_on_the_session_you_left(local_host, projects):
+    for name in ("alpha", "bravo", "charlie"):
+        tmux.create(local_host, name, "shell", config.DEFAULT_AGENTS, str(projects))
+
+    async def run():
+        app = MuxherdApp(config.load(), focus_key=f"{local_host.name}:bravo")
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause(1.2)
+            return app.selected.name
+
+    assert asyncio.run(run()) == "bravo"
+
+
+def _fake_picker(monkeypatch, picks, focus_seen):
+    from muxherd import tui
+
+    class FakeApp:
+        def __init__(self, cfg, initial_filter="", mode="attach", focus_key=None):
+            focus_seen.append(focus_key)
+
+        def run(self):
+            return picks.pop(0)
+
+    monkeypatch.setattr(tui, "MuxherdApp", FakeApp)
+    monkeypatch.setattr(config, "load", lambda: config.Config())
+
+
+def test_pick_loop_returns_to_picker_until_quit(monkeypatch, local_host):
+    from muxherd import cli
+
+    focus_seen, attached = [], []
+    _fake_picker(monkeypatch, [tmux.Session(local_host, "alpha"), tmux.Session(local_host, "bravo"), None], focus_seen)
+    monkeypatch.setattr(cli, "_attach_and_wait", lambda session, mode: attached.append(session.name) or True)
+    cli._pick()
+    assert attached == ["alpha", "bravo"]
+    assert focus_seen == [None, f"{local_host.name}:alpha", f"{local_host.name}:bravo"]
+
+
+class Exec(Exception):
+    """Stands in for tmux.attach, which replaces the process and never returns."""
+
+
+def _fake_exec(session, mode):
+    raise Exec(session.name)
+
+
+def test_pick_once_hands_over_instead_of_looping(monkeypatch, local_host):
+    from muxherd import cli
+
+    _fake_picker(monkeypatch, [tmux.Session(local_host, "x")], [])
+    monkeypatch.setattr(tmux, "attach", _fake_exec)
+    monkeypatch.setattr(cli, "_attach_and_wait", lambda *a: pytest.fail("looped despite --once"))
+    with pytest.raises(Exec, match="x"):
+        cli._pick(once=True)
+
+
+def test_pick_inside_local_tmux_switches_instead_of_looping(monkeypatch, local_host):
+    from muxherd import cli
+
+    _fake_picker(monkeypatch, [tmux.Session(local_host, "x")], [])
+    monkeypatch.setenv("TMUX", "/tmp/fake,1,0")
+    monkeypatch.setattr(tmux, "attach", _fake_exec)
+    monkeypatch.setattr(cli, "_attach_and_wait", lambda *a: pytest.fail("looped inside tmux"))
+    with pytest.raises(Exec):
+        cli._pick()

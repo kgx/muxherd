@@ -45,9 +45,15 @@ DEFAULT_AGENTS = {
 @dataclass
 class Editor:
     # Run on the machine where you use muxherd. {path} is the session's directory,
-    # {host} the session host's ssh target.
+    # {host} the session host's ssh target, {uri} a VS Code Remote-SSH folder URI.
     local: str = "code -n {path}"
-    remote: str = "code -n --remote ssh-remote+{host} {path}"
+    # --folder-uri, not `--remote <host> <path>`: with the latter VS Code can't tell a
+    # remote folder from a file and opens the parent directory.
+    remote: str = "code -n --folder-uri {uri}"
+
+
+# Earlier default for `remote`; configs written with it are upgraded on load.
+LEGACY_REMOTE_EDITOR = "code -n --remote ssh-remote+{host} {path}"
 
 
 def local_hostname() -> str:
@@ -85,9 +91,10 @@ def load() -> Config:
         cfg.agents = {str(k): _agent(v) for k, v in agents.items()}
     cfg.attach = data.get("attach", cfg.attach)
     if editor := data.get("editor"):
+        remote = str(editor.get("remote", cfg.editor.remote))
         cfg.editor = Editor(
             local=str(editor.get("local", cfg.editor.local)),
-            remote=str(editor.get("remote", cfg.editor.remote)),
+            remote=Editor.remote if remote == LEGACY_REMOTE_EDITOR else remote,
         )
     return cfg
 
@@ -106,7 +113,8 @@ def render(hosts: dict[str, str], attach: str = "mosh") -> str:
         *(f"{name} = {q(target)}" for name, target in hosts.items()),
         "",
         "# Editor opened with ctrl+e in the picker or `mh code`. Runs on this machine.",
-        "#   {path} = session directory, {host} = the session host's ssh target",
+        "#   {path} = session directory, {host} = the session host's ssh target,",
+        "#   {uri} = VS Code Remote-SSH folder URI for {host} + {path}",
         "[editor]",
         f"local = {q(Editor.local)}",
         f"remote = {q(Editor.remote)}",

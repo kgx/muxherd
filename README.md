@@ -146,16 +146,19 @@ to it right away.
 `ctrl+e` in the picker, or `mh code [name]`, opens the session's current directory in
 an editor **on the machine you're using**. For sessions on another host, it uses VS Code's
 [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
-over the same tailnet ssh connection:
+over the same tailnet ssh connection, with an explicit folder URI. The plainer
+`code --remote ssh-remote+host /path` form makes VS Code guess whether the path is a file
+and often opens the parent folder:
 
 ```sh
-code -n --remote ssh-remote+excelsior /home/kgx/develop/infra
+code -n --folder-uri vscode-remote://ssh-remote+<hex-encoded host>/home/kgx/develop/infra
 ```
 
 Each laptop needs the Remote - SSH extension and the `code` command on PATH (macOS: VS Code
 command palette → "Shell Command: Install 'code' command in PATH"). The first time, VS Code
 installs its server on the host automatically. To use another editor, change `[editor]`
-in the config, e.g. Zed: `remote = "zed ssh://{host}{path}"`.
+in the config: `{path}` is the directory, `{host}` the ssh target and `{uri}` the VS Code
+folder URI. For example, Zed: `remote = "zed ssh://{host}{path}"`.
 
 ## Versioning
 
@@ -182,7 +185,7 @@ excelsior = "local"        # this machine
 
 [editor]                   # {path} = session dir, {host} = host's ssh target
 local = "code -n {path}"
-remote = "code -n --remote ssh-remote+{host} {path}"
+remote = "code -n --folder-uri {uri}"
 
 [agents.claude]
 start = "claude --session-id {id}"   # typed into the new session's shell

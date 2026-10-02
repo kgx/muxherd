@@ -2,22 +2,41 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 import shutil
 import subprocess
+from urllib.parse import quote
 
 from .config import Editor
 from .tmux import HostError, Session
 
 
+def vscode_remote_uri(target: str, path: str) -> str:
+    """vscode-remote:// folder URI for Remote-SSH.
+
+    The host goes in Remote-SSH's hex-encoded JSON form, which survives targets like
+    user@host or host:port that would otherwise be misread as URI syntax.
+    """
+    authority = json.dumps({"hostName": target}, separators=(",", ":")).encode().hex()
+    return f"vscode-remote://ssh-remote+{authority}{quote(path)}"
+
+
 def editor_argv(session: Session, editor: Editor) -> list[str]:
     path = (session.path if session.live else "") or session.directory or "~"
     template = editor.local if session.host.is_local else editor.remote
+    values = {
+        "{path}": path,
+        "{host}": session.host.target,
+        "{uri}": vscode_remote_uri(session.host.target, path),
+    }
     # Substitute per argument so paths with spaces stay one argument.
-    return [
-        arg.replace("{path}", path).replace("{host}", session.host.target)
-        for arg in shlex.split(template)
-    ]
+    argv = []
+    for arg in shlex.split(template):
+        for key, value in values.items():
+            arg = arg.replace(key, value)
+        argv.append(arg)
+    return argv
 
 
 def open_editor(session: Session, editor: Editor) -> list[str]:

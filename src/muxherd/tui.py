@@ -161,7 +161,8 @@ class DirBrowserScreen(ModalScreen):
         show_hidden = prefix.startswith(".")
         base = parent.rstrip("/") if parent != "/" else ""
         matches = [
-            f"{base}/{n}" for n in names
+            f"{base}/{n}"
+            for n in names
             if n.lower().startswith(prefix.lower()) and (show_hidden or not n.startswith("."))
         ]
         if not get_current_worker().is_cancelled:
@@ -207,7 +208,6 @@ class DirBrowserScreen(ModalScreen):
         self.query_one("#dir", Input).focus()
 
 
-
 class NewSessionScreen(DirBrowserScreen):
     BINDINGS = [Binding("escape", "cancel", "cancel")]
 
@@ -235,10 +235,18 @@ class NewSessionScreen(DirBrowserScreen):
             agent = self.spec["agent"] if self.spec else agents[0]
             yield Select([(a, a) for a in agents], value=agent, allow_blank=False, compact=True, id="agent")
             yield Label("host")
-            yield Select([(h.name, h.name) for h in self.hosts], value=self.default_host, allow_blank=False, compact=True, id="host")
+            yield Select(
+                [(h.name, h.name) for h in self.hosts],
+                value=self.default_host,
+                allow_blank=False,
+                compact=True,
+                id="host",
+            )
             yield from self.dir_widgets(self.spec["dir"] if self.spec else self._default_dir(self.default_host))
             yield Label("name")
-            yield Input(self.spec["name"] if self.spec else "", placeholder="auto: <agent>-<dir>", compact=True, id="name")
+            yield Input(
+                self.spec["name"] if self.spec else "", placeholder="auto: <agent>-<dir>", compact=True, id="name"
+            )
             yield Label(
                 "[b]enter[/b] create & attach   [b]↑↓[/b] pick dir   [b]tab[/b] open dir   [b]esc[/b] cancel",
                 classes="hint",
@@ -312,7 +320,9 @@ class ChangeDirScreen(DirBrowserScreen):
                 else "The session will reopen here."
             )
             yield Label(note, classes="hint")
-            yield Label("[b]enter[/b] change   [b]↑↓[/b] pick dir   [b]tab[/b] open dir   [b]esc[/b] cancel", classes="hint")
+            yield Label(
+                "[b]enter[/b] change   [b]↑↓[/b] pick dir   [b]tab[/b] open dir   [b]esc[/b] cancel", classes="hint"
+            )
 
     def on_mount(self) -> None:
         self.query_one("#dir", Input).focus()
@@ -513,9 +523,14 @@ class MuxherdApp(App[Session | None]):
         return Text.assemble(
             (f"closed {tmux.ago(session.closed_at)} ago", "bold"),
             " — enter reopens it, ctrl+x forgets it\n\n",
-            ("  dir    ", "dim"), tmux.short_path(session.directory), "\n",
-            ("  agent  ", "dim"), session.agent or "shell", "\n",
-            ("  runs   ", "dim"), command,
+            ("  dir    ", "dim"),
+            tmux.short_path(session.directory),
+            "\n",
+            ("  agent  ", "dim"),
+            session.agent or "shell",
+            "\n",
+            ("  runs   ", "dim"),
+            command,
         )
 
     def _show_preview(self, key: str, text: Text) -> None:
@@ -561,12 +576,15 @@ class MuxherdApp(App[Session | None]):
         try:
             reopened = tmux.reopen(session, self.config.agents, create_dir=create_dir)
         except MissingDirectory as e:
+
             def done(ok: bool | None) -> None:
                 if ok:
                     self._reopen(session, create_dir=True)
 
             self.call_from_thread(
-                self.push_screen, ConfirmScreen(f"[b]{e.path}[/b] no longer exists on [b]{e.host}[/b].\nCreate it?"), done
+                self.push_screen,
+                ConfirmScreen(f"[b]{e.path}[/b] no longer exists on [b]{e.host}[/b].\nCreate it?"),
+                done,
             )
             return
         except HostError as e:
@@ -648,7 +666,9 @@ class MuxherdApp(App[Session | None]):
 
     def action_new(self, spec: dict | None = None) -> None:
         default_host = self.selected.host.name if self.selected else self.hosts[0].name
-        self.push_screen(NewSessionScreen(self.config, self.hosts, default_host, spec, self._recent_dirs()), self._create)
+        self.push_screen(
+            NewSessionScreen(self.config, self.hosts, default_host, spec, self._recent_dirs()), self._create
+        )
 
     def _recent_dirs(self, limit: int = 8) -> dict[str, list[str]]:
         """Most recently used session directories per host, for the new-session dialog."""
@@ -677,6 +697,7 @@ class MuxherdApp(App[Session | None]):
         try:
             new = tmux.chdir_session(session, directory, create_dir=create_dir)
         except MissingDirectory as e:
+
             def done(ok: bool | None) -> None:
                 if ok:
                     self._chdir(session, directory, create_dir=True)
@@ -741,6 +762,4 @@ class MuxherdApp(App[Session | None]):
             else:
                 self.action_new(spec)  # back to the form to fix the path
 
-        self.push_screen(
-            ConfirmScreen(f"[b]{e.path}[/b] doesn't exist on [b]{e.host}[/b].\nCreate it?"), done
-        )
+        self.push_screen(ConfirmScreen(f"[b]{e.path}[/b] doesn't exist on [b]{e.host}[/b].\nCreate it?"), done)

@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import time
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
 from rich.table import Table
-
-import json
 
 from . import __version__, config, editor, registry, tmux
 from .tmux import Host, HostError, Session
@@ -96,7 +95,7 @@ def main_callback(
 
 @app.command("ls")
 def ls(
-    host: Annotated[Optional[str], typer.Option("--host", "-H", help="Only this host.")] = None,
+    host: Annotated[str | None, typer.Option("--host", "-H", help="Only this host.")] = None,
     live: Annotated[bool, typer.Option("--live", "-l", help="Hide closed sessions.")] = False,
 ) -> None:
     """List sessions on all configured hosts (closed ones marked ✕)."""
@@ -125,9 +124,10 @@ def ls(
         else:
             table.add_row(
                 "[red dim]✕[/red dim]",
-                *(f"[dim]{v}[/dim]" for v in (
-                    s.host.name, s.name, s.agent, tmux.ago(s.closed_at, now), tmux.short_path(s.directory)
-                )),
+                *(
+                    f"[dim]{v}[/dim]"
+                    for v in (s.host.name, s.name, s.agent, tmux.ago(s.closed_at, now), tmux.short_path(s.directory))
+                ),
             )
     console.print(table)
 
@@ -145,7 +145,9 @@ def attach(query: Annotated[str, typer.Argument(help="Session name, 'host:name',
 
 
 @app.command("code")
-def code(query: Annotated[Optional[str], typer.Argument(help="Session name, 'host:name', or part of a name.")] = None) -> None:
+def code(
+    query: Annotated[str | None, typer.Argument(help="Session name, 'host:name', or part of a name.")] = None,
+) -> None:
     """Open a session's directory in your editor (VS Code Remote-SSH for remote hosts)."""
     cfg = config.load()
     if query:
@@ -163,7 +165,9 @@ def code(query: Annotated[Optional[str], typer.Argument(help="Session name, 'hos
 
 
 @app.command("sh")
-def sh(query: Annotated[Optional[str], typer.Argument(help="Session name, 'host:name', or part of a name.")] = None) -> None:
+def sh(
+    query: Annotated[str | None, typer.Argument(help="Session name, 'host:name', or part of a name.")] = None,
+) -> None:
     """Open a throwaway shell (its own tmux session) in a session's project directory."""
     cfg = config.load()
     if query:
@@ -175,17 +179,23 @@ def sh(query: Annotated[Optional[str], typer.Argument(help="Session name, 'host:
             except HostError as e:
                 err.print(f"[red]{e}[/red]")
                 raise typer.Exit(1)
-            console.print(f"opened [cyan]{shell.host.name}[/cyan]:[bold]{shell.name}[/bold] in {tmux.short_path(shell.directory)}")
+            console.print(
+                f"opened [cyan]{shell.host.name}[/cyan]:[bold]{shell.name}[/bold] in {tmux.short_path(shell.directory)}"
+            )
             tmux.attach(shell, cfg.attach)
     _pick(query.rpartition(":")[2] if query else "", mode="shell")
 
 
 @app.command("new")
 def new(
-    name: Annotated[Optional[str], typer.Argument(help="Session name (default: <agent>-<dir>).")] = None,
+    name: Annotated[str | None, typer.Argument(help="Session name (default: <agent>-<dir>).")] = None,
     agent: Annotated[str, typer.Option("--agent", "-a", help="Agent to launch (see config [agents]).")] = "claude",
-    host: Annotated[Optional[str], typer.Option("--host", "-H", help="Host to run on (default: first configured).")] = None,
-    directory: Annotated[Optional[str], typer.Option("--dir", "-d", help="Working directory (default: cwd locally, ~ remotely).")] = None,
+    host: Annotated[
+        str | None, typer.Option("--host", "-H", help="Host to run on (default: first configured).")
+    ] = None,
+    directory: Annotated[
+        str | None, typer.Option("--dir", "-d", help="Working directory (default: cwd locally, ~ remotely).")
+    ] = None,
     detach: Annotated[bool, typer.Option("--detach", "-D", help="Create without attaching.")] = False,
 ) -> None:
     """Start an agent in a new tmux session."""
@@ -352,7 +362,7 @@ def host_forget(name: str) -> None:
 @app.command("init")
 def init(
     remote: Annotated[
-        Optional[list[str]],
+        list[str] | None,
         typer.Option("--remote", "-r", help="Remote host as NAME or NAME=SSH_TARGET. Repeatable."),
     ] = None,
     no_local: Annotated[bool, typer.Option("--no-local", help="Don't include this machine.")] = False,
@@ -378,7 +388,9 @@ def init(
 def hosts() -> None:
     """Check that each configured host is reachable."""
     cfg = config.load()
-    console.print(f"[dim]config: {config.CONFIG_PATH}{'' if config.CONFIG_PATH.exists() else ' (missing, using defaults)'}[/dim]")
+    console.print(
+        f"[dim]config: {config.CONFIG_PATH}{'' if config.CONFIG_PATH.exists() else ' (missing, using defaults)'}[/dim]"
+    )
     for h in _hosts(cfg):
         try:
             sessions = tmux.list_sessions(h)

@@ -4,12 +4,12 @@ Herd your AI coding agents — Claude Code, Codex, Grok Build — running in nam
 sessions on one or more machines, and jump between them from anywhere on your tailnet.
 
 ```
- muxherd  2 live · 1 closed   excelsior ✓
+ muxherd  2 live · 1 closed   devbox ✓
  type to filter sessions…
     host       session          agent   idle  dir
- ●  excelsior  claude-infra     claude  4s    ~/develop/infra
- ○  excelsior  codex-api        codex   12m   ~/develop/api
- ✕  excelsior  grok-site        grok    1h    ~/develop/site
+ ●  devbox  claude-infra     claude  4s    ~/src/infra
+ ○  devbox  codex-api        codex   12m   ~/src/api
+ ✕  devbox  grok-site        grok    1h    ~/src/site
 ──────────────────────────────────────────────────────────────
  (live preview of the selected session's pane)
  ^e editor  ^o shell  ^r rename  ⏎ attach  ^x kill/forget  esc clear/quit  ^n new  ^t closed  ^p preview
@@ -32,18 +32,28 @@ sessions on one or more machines, and jump between them from anywhere on your ta
 ## Install
 
 ```sh
-uv tool install git+ssh://git@github.com/kgx/muxherd
-# from a clone (standalone copy, not linked to the repo):
-make install      # make update = git pull + reinstall; plain `make` lists targets
-# dev checkout (edits take effect immediately):
-uv tool install -e ~/develop/muxherd
+uv tool install git+https://github.com/kgx/muxherd
+# or from a clone (a standalone copy, not linked to the repo):
+make install      # `make update` = git pull + reinstall; plain `make` lists targets
 ```
 
 This installs `muxherd` and the short alias `mh`.
 
+## Requirements
+
+- **Python 3.11+** and [uv](https://docs.astral.sh/uv/) (or pipx) to install it.
+- **tmux 3.x** on every machine that runs sessions.
+- **muxherd on every machine that runs sessions,** not just where you use the picker.
+  Clients call `muxherd _host ...` on remote hosts over ssh.
+- **Non-interactive ssh** from your laptop to each host (key auth or Tailscale SSH).
+- **mosh** (optional, recommended) on both ends for roaming-friendly attach.
+- **VS Code with Remote - SSH** (optional) for `ctrl+e`.
+- Linux and macOS are supported. A private network such as Tailscale is strongly
+  recommended (see [Security](#security)).
+
 ## Setup
 
-**Host machine** (where the agents run, e.g. `excelsior`):
+**Host machine** (where the agents run, e.g. `devbox`):
 
 ```sh
 sudo apt install tmux mosh      # macOS: brew install tmux mosh
@@ -54,8 +64,8 @@ mh init                         # config with this machine as "local"
 
 ```sh
 brew install mosh               # or apt install mosh
-mh init --no-local -r excelsior # only show the remote host's sessions
-# or keep local sessions too:   mh init -r excelsior
+mh init --no-local -r devbox # only show the remote host's sessions
+# or keep local sessions too:   mh init -r devbox
 mh hosts                        # check connectivity
 ```
 
@@ -63,7 +73,7 @@ mh hosts                        # check connectivity
 Use `-r NAME=user@target` or an `~/.ssh/config` alias when they differ.
 
 Remote hosts need **non-interactive ssh** (key auth, or Tailscale SSH) because muxherd
-polls them with `ssh -o BatchMode=yes`. Make sure `ssh excelsior true` works without
+polls them with `ssh -o BatchMode=yes`. Make sure `ssh devbox true` works without
 a prompt.
 
 ### Keeping it on the tailnet
@@ -87,16 +97,15 @@ covers. To keep sshd off other interfaces entirely, set
 ```sh
 mh                       # picker
 mh a infra               # attach (or reopen if closed): name, host:name, or unique substring
-
 mh code infra            # open the session's directory in VS Code (no name: picker)
 mh sh infra              # throwaway shell (own tmux session) in the session's project dir
 mh new -a codex          # new codex session in cwd, named codex-<dir>, then attach
-mh new api -a claude -H excelsior -d ~/develop/api -D   # create detached on a host
+mh new api -a claude -H devbox -d ~/src/api -D   # create detached on a host
 mh ls                    # list everything, closed sessions marked ✕ (--live to hide them)
-mh kill excelsior:api    # kill (asks first; -y to skip); it stays listed as closed
+mh kill devbox:api    # kill (asks first; -y to skip); it stays listed as closed
 mh forget api            # remove a closed session from the registry
 mh rename api api-v2     # rename (live or closed; host:name works too)
-mh chdir api ~/develop/api-v2   # change a session's project directory
+mh chdir api ~/src/api-v2   # change a session's project directory
 mh hosts                 # reachability check
 ```
 
@@ -150,7 +159,7 @@ to it right away.
 
 ## Editor
 
-`ctrl+e` in the picker, or `mh code [name]`, opens the session's current directory in
+`ctrl+e` in the picker, or `mh code [name]`, opens the session's project directory in
 an editor **on the machine you're using**. For sessions on another host, it uses VS Code's
 [Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
 over the same tailnet ssh connection, with an explicit folder URI. The plainer
@@ -158,7 +167,7 @@ over the same tailnet ssh connection, with an explicit folder URI. The plainer
 and often opens the parent folder:
 
 ```sh
-code -n --folder-uri vscode-remote://ssh-remote+<hex-encoded host>/home/kgx/develop/infra
+code -n --folder-uri vscode-remote://ssh-remote+<hex-encoded host>/home/me/src/infra
 ```
 
 Each laptop needs the Remote - SSH extension and the `code` command on PATH (macOS: VS Code
@@ -187,10 +196,10 @@ make release VERSION=0.2.0  # tag, push and create a GitHub release (clean tree 
 attach = "mosh"            # or "ssh"
 
 [hosts]
-excelsior = "local"        # this machine
-# venture = "kgx@venture"  # any ssh target
+devbox = "local"        # this machine
+# laptop = "me@laptop"    # any ssh target
 
-[editor]                   # {path} = session dir, {host} = host's ssh target
+[editor]                   # {path} = project dir, {host} = ssh target, {uri} = VS Code URI
 local = "code -n {path}"
 remote = "code -n --folder-uri {uri}"
 
@@ -235,3 +244,45 @@ open when it ended, the close time is approximate.
 The agent column shows the agent muxherd launched the session with, which it stores in
 the `@muxherd_agent` tmux option. For sessions muxherd didn't create, it shows the pane's
 current command instead.
+
+## Security
+
+muxherd adds no network service of its own. It only runs `tmux`, `ssh` and `mosh` as
+you, against the hosts in your config. A few things follow from that:
+
+- **Anyone who can ssh into a host as you can do everything muxherd does there.**
+  Protect the hosts the usual way: key-only ssh, and ideally reachable only on a private
+  network. The [tailnet setup](#keeping-it-on-the-tailnet) above shows one way.
+- **The config file is a list of commands.** Agent `start`/`resume`/`resumable` and the
+  `[editor]` templates are executed as written, so treat `~/.config/muxherd/config.toml`
+  like a shell script: don't run with a config you didn't write.
+- **Remote hosts are trusted.** The picker runs `muxherd _host ...` on each host and
+  displays what comes back, including pane previews. Only add hosts you control.
+- **Agents run with your permissions** inside tmux on the host. muxherd doesn't sandbox
+  them. If you use permission-skipping modes (e.g. `--dangerously-skip-permissions`), the
+  agent can do anything your user can on that host.
+- **Session registries** (`~/.local/state/muxherd/registry.db`) store session names,
+  directories and agent conversation IDs, but not conversation content.
+
+## Development
+
+```sh
+git clone https://github.com/kgx/muxherd && cd muxherd
+uv tool install -e .     # mh runs from your checkout; edits take effect immediately
+make test                # pytest
+make lint                # ruff check + format check
+```
+
+The tests run against a **private tmux server** (each test sets `TMUX_TMPDIR` to a temp
+dir) and a temp registry and config, so they're safe to run on a machine with live
+sessions. Do the same when trying changes by hand:
+
+```sh
+export TMUX_TMPDIR=$(mktemp -d) MUXHERD_REGISTRY=$(mktemp -d)/registry.db
+unset TMUX
+mh new -D -a shell scratch && mh ls
+```
+
+## License
+
+[MIT](LICENSE)

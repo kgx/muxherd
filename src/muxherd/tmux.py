@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shlex
 import shutil
 import subprocess
-import random
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -37,11 +37,16 @@ FORMAT = SEP.join(f"#{{{f}}}" for f in FIELDS)
 CONTROL_DIR = Path.home() / ".cache" / "muxherd"
 # Reuse one ssh connection per host so polling and previews stay cheap.
 SSH_OPTS = [
-    "-o", "BatchMode=yes",
-    "-o", "ConnectTimeout=4",
-    "-o", "ControlMaster=auto",
-    "-o", f"ControlPath={CONTROL_DIR}/ssh-%C",
-    "-o", "ControlPersist=10m",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=4",
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    f"ControlPath={CONTROL_DIR}/ssh-%C",
+    "-o",
+    "ControlPersist=10m",
 ]
 # Non-interactive ssh gets a minimal PATH; make sure common tmux locations are on it.
 REMOTE_PATH = 'PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin"; '
@@ -49,6 +54,11 @@ REMOTE_PATH = 'PATH="$PATH:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin"; '
 # on a stock server), so fall back to a universally available one.
 FALLBACK_TERM = "xterm-256color"
 REMOTE_TERM_FIX = f'infocmp "$TERM" >/dev/null 2>&1 || export TERM={FALLBACK_TERM}; '
+
+
+# tmux errors meaning "no server, so no sessions". "server exited unexpectedly" is a race:
+# the last session was just killed and the server is shutting down.
+NO_SERVER_MESSAGES = ("no server running", "error connecting to", "No such file", "server exited unexpectedly")
 
 
 class HostError(Exception):
@@ -154,7 +164,7 @@ def tmux_live(host: Host) -> list[dict]:
     p = host.run(["tmux", "list-sessions", "-F", FORMAT])
     if p.returncode != 0:
         err = (p.stderr or "").strip()
-        if "no server running" in err or "error connecting to" in err or "No such file" in err:
+        if any(m in err for m in NO_SERVER_MESSAGES):
             return []  # tmux installed but no server: no sessions
         if not host.is_local and p.returncode == 255:
             raise HostError(f"{host.name}: unreachable ({err.splitlines()[-1] if err else 'ssh failed'})")
@@ -257,11 +267,36 @@ def new_session(
         if p.returncode != 0:
             raise HostError(f"{host.name}: could not create {directory}: {p.stderr.strip()}")
     args = [
-        "new-session", "-d", "-s", name, "-c", directory,
-        ";", "set-option", "-t", exact(name), "@muxherd_agent", agent,
-        ";", "set-option", "-t", exact(name), "@muxherd_id", agent_id,
-        ";", "set-option", "-t", exact(name), "@muxherd_dir", directory,
-        ";", "set-option", "-t", exact(name), "@muxherd_ephemeral", "1" if ephemeral else "",
+        "new-session",
+        "-d",
+        "-s",
+        name,
+        "-c",
+        directory,
+        ";",
+        "set-option",
+        "-t",
+        exact(name),
+        "@muxherd_agent",
+        agent,
+        ";",
+        "set-option",
+        "-t",
+        exact(name),
+        "@muxherd_id",
+        agent_id,
+        ";",
+        "set-option",
+        "-t",
+        exact(name),
+        "@muxherd_dir",
+        directory,
+        ";",
+        "set-option",
+        "-t",
+        exact(name),
+        "@muxherd_ephemeral",
+        "1" if ephemeral else "",
     ]
     if command:
         # Type the command into the login shell so the agent gets the user's full
@@ -300,7 +335,9 @@ def _check(host: Host, shell_cmd: str) -> bool:
     return host.run(["sh", "-c", shell_cmd]).returncode == 0
 
 
-def create(host: Host, name: str, agent_name: str, agents: dict[str, Agent], directory: str, create_dir: bool = False) -> Session:
+def create(
+    host: Host, name: str, agent_name: str, agents: dict[str, Agent], directory: str, create_dir: bool = False
+) -> Session:
     command, agent_id = start_command(agents.get(agent_name, Agent()))
     return new_session(host, name, agent_name, command, directory, agent_id=agent_id, create_dir=create_dir)
 
@@ -309,8 +346,13 @@ def reopen(session: Session, agents: dict[str, Agent], create_dir: bool = False)
     """Start a closed session again under the same name, resuming the agent if possible."""
     command, agent_id = resume_command(agents.get(session.agent, Agent()), session.agent_id, session.host)
     return new_session(
-        session.host, session.name, session.agent, command, session.directory or "~",
-        agent_id=agent_id, create_dir=create_dir,
+        session.host,
+        session.name,
+        session.agent,
+        command,
+        session.directory or "~",
+        agent_id=agent_id,
+        create_dir=create_dir,
     )
 
 
@@ -415,7 +457,12 @@ def attach_argv(session: Session, mode: str = "mosh") -> list[str]:
         return ["tmux", "attach-session", "-t", target]
     if mode == "mosh" and shutil.which("mosh"):
         return ["mosh", host.target, "--", "tmux", "attach-session", "-t", target]
-    return ["ssh", "-t", host.target, REMOTE_PATH + REMOTE_TERM_FIX + shlex.join(["tmux", "attach-session", "-t", target])]
+    return [
+        "ssh",
+        "-t",
+        host.target,
+        REMOTE_PATH + REMOTE_TERM_FIX + shlex.join(["tmux", "attach-session", "-t", target]),
+    ]
 
 
 def project_dir(session: Session) -> str:
@@ -424,12 +471,48 @@ def project_dir(session: Session) -> str:
 
 
 ADJECTIVES = [
-    "brave", "sleepy", "fuzzy", "sneaky", "jolly", "grumpy", "zesty", "wobbly", "plucky", "breezy",
-    "cosmic", "dapper", "feisty", "giddy", "humble", "nimble", "peppy", "quirky", "snappy", "witty",
+    "brave",
+    "sleepy",
+    "fuzzy",
+    "sneaky",
+    "jolly",
+    "grumpy",
+    "zesty",
+    "wobbly",
+    "plucky",
+    "breezy",
+    "cosmic",
+    "dapper",
+    "feisty",
+    "giddy",
+    "humble",
+    "nimble",
+    "peppy",
+    "quirky",
+    "snappy",
+    "witty",
 ]
 ANIMALS = [
-    "otter", "badger", "llama", "narwhal", "gecko", "puffin", "wombat", "ferret", "yak", "lemur",
-    "walrus", "axolotl", "capybara", "heron", "marmot", "newt", "ocelot", "panda", "quokka", "tapir",
+    "otter",
+    "badger",
+    "llama",
+    "narwhal",
+    "gecko",
+    "puffin",
+    "wombat",
+    "ferret",
+    "yak",
+    "lemur",
+    "walrus",
+    "axolotl",
+    "capybara",
+    "heron",
+    "marmot",
+    "newt",
+    "ocelot",
+    "panda",
+    "quokka",
+    "tapir",
 ]
 
 

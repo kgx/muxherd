@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install update uninstall check version release
+.PHONY: help install update uninstall check version release test lint
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -17,6 +17,13 @@ uninstall: ## Remove the installed tool
 
 check: ## Show which mh is on PATH and its version
 	@command -v mh && mh --version
+
+test: ## Run the test suite (uses a private tmux server, never your real one)
+	uv run pytest
+
+lint: ## Lint and check formatting
+	uv run ruff check .
+	uv run ruff format --check .
 
 version: ## Show the version this checkout would build as
 	@git describe --tags --dirty --always

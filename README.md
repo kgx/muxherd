@@ -86,6 +86,7 @@ covers. To keep sshd off other interfaces entirely, set
 mh                       # picker
 mh a infra               # attach (or reopen if closed): name, host:name, or unique substring
 
+mh code infra            # open the session's directory in VS Code (no name: picker)
 mh new -a codex          # new codex session in cwd, named codex-<dir>, then attach
 mh new api -a claude -H excelsior -d ~/develop/api -D   # create detached on a host
 mh ls                    # list everything, closed sessions marked ✕ (--live to hide them)
@@ -104,6 +105,7 @@ mh hosts                 # reachability check
 | ctrl+n         | new session (agent, host, directory, name)                 |
 | ctrl+x         | kill a live session / forget a closed one (with confirm)   |
 | ctrl+t         | show/hide closed sessions                                  |
+| ctrl+e         | open the session's directory in your editor                |
 | ctrl+p         | toggle preview pane                                        |
 | ctrl+r         | refresh now                                                |
 | esc            | clear filter, then quit                                    |
@@ -113,6 +115,22 @@ How attach works:
 - **Local session, run inside tmux:** `tmux switch-client`, so tmux never nests.
 - **Remote session:** `mosh <host> -- tmux attach`, falling back to `ssh -t` when mosh
   isn't installed or the config sets `attach = "ssh"`.
+
+## Editor
+
+`ctrl+e` in the picker, or `mh code [name]`, opens the session's current directory in
+an editor **on the machine you're using**. For sessions on another host, it uses VS Code's
+[Remote - SSH](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-ssh)
+over the same tailnet ssh connection:
+
+```sh
+code -n --remote ssh-remote+excelsior /home/kgx/develop/infra
+```
+
+Each laptop needs the Remote - SSH extension and the `code` command on PATH (macOS: VS Code
+command palette → "Shell Command: Install 'code' command in PATH"). The first time, VS Code
+installs its server on the host automatically. To use another editor, change `[editor]`
+in the config, e.g. Zed: `remote = "zed ssh://{host}{path}"`.
 
 ## Config
 
@@ -124,6 +142,10 @@ attach = "mosh"            # or "ssh"
 [hosts]
 excelsior = "local"        # this machine
 # venture = "kgx@venture"  # any ssh target
+
+[editor]                   # {path} = session dir, {host} = host's ssh target
+local = "code -n {path}"
+remote = "code -n --remote ssh-remote+{host} {path}"
 
 [agents.claude]
 start = "claude --session-id {id}"   # typed into the new session's shell

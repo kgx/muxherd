@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import time
 from typing import Annotated, Optional
 
@@ -12,7 +13,7 @@ from rich.table import Table
 
 import json
 
-from . import __version__, config, registry, tmux
+from . import __version__, config, editor, registry, tmux
 from .tmux import Host, HostError, Session
 
 app = typer.Typer(
@@ -40,11 +41,11 @@ def _report_errors(errors: dict[str, str]) -> None:
         err.print(f"[yellow]warning:[/yellow] {msg}")
 
 
-def _pick(initial_filter: str = "") -> None:
+def _pick(initial_filter: str = "", editor_mode: bool = False) -> None:
     from .tui import MuxherdApp
 
     cfg = config.load()
-    session = MuxherdApp(cfg, initial_filter).run()
+    session = MuxherdApp(cfg, initial_filter, editor_mode=editor_mode).run()
     if session is not None:
         tmux.attach(session, cfg.attach)  # the picker already reopened closed sessions
 
@@ -140,6 +141,24 @@ def attach(query: Annotated[str, typer.Argument(help="Session name, 'host:name',
     if len(found) == 1:
         _open(found[0], cfg)
     _pick(query.rpartition(":")[2])
+
+
+@app.command("code")
+def code(query: Annotated[Optional[str], typer.Argument(help="Session name, 'host:name', or part of a name.")] = None) -> None:
+    """Open a session's directory in your editor (VS Code Remote-SSH for remote hosts)."""
+    cfg = config.load()
+    if query:
+        found, errors = _find(query, cfg)
+        _report_errors(errors)
+        if len(found) == 1:
+            try:
+                argv = editor.open_editor(found[0], cfg.editor)
+            except HostError as e:
+                err.print(f"[red]{e}[/red]")
+                raise typer.Exit(1)
+            console.print(f"[dim]{shlex.join(argv)}[/dim]")
+            return
+    _pick(query.rpartition(":")[2] if query else "", editor_mode=True)
 
 
 @app.command("new")

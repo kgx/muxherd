@@ -42,6 +42,14 @@ DEFAULT_AGENTS = {
 }
 
 
+@dataclass
+class Editor:
+    # Run on the machine where you use muxherd. {path} is the session's directory,
+    # {host} the session host's ssh target.
+    local: str = "code -n {path}"
+    remote: str = "code -n --remote ssh-remote+{host} {path}"
+
+
 def local_hostname() -> str:
     return socket.gethostname().split(".")[0]
 
@@ -53,6 +61,7 @@ class Config:
     agents: dict[str, Agent] = field(default_factory=lambda: dict(DEFAULT_AGENTS))
     # how to attach to remote sessions: "mosh" or "ssh"
     attach: str = "mosh"
+    editor: Editor = field(default_factory=Editor)
 
 
 def _agent(value: str | dict) -> Agent:
@@ -75,6 +84,11 @@ def load() -> Config:
     if agents := data.get("agents"):
         cfg.agents = {str(k): _agent(v) for k, v in agents.items()}
     cfg.attach = data.get("attach", cfg.attach)
+    if editor := data.get("editor"):
+        cfg.editor = Editor(
+            local=str(editor.get("local", cfg.editor.local)),
+            remote=str(editor.get("remote", cfg.editor.remote)),
+        )
     return cfg
 
 
@@ -90,6 +104,12 @@ def render(hosts: dict[str, str], attach: str = "mosh") -> str:
         '# name = "local" for this machine, otherwise an ssh target (tailnet name, user@host, ssh alias)',
         "[hosts]",
         *(f"{name} = {q(target)}" for name, target in hosts.items()),
+        "",
+        "# Editor opened with ctrl+e in the picker or `mh code`. Runs on this machine.",
+        "#   {path} = session directory, {host} = the session host's ssh target",
+        "[editor]",
+        f"local = {q(Editor.local)}",
+        f"remote = {q(Editor.remote)}",
         "",
         "# Agents offered when creating a session.",
         "#   start  = command typed into the session's shell; {id} becomes a fresh UUID",

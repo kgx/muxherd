@@ -14,7 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, Label, Select, Static
 from textual.worker import get_current_worker
 
-from . import tmux
+from . import editor, tmux
 from .config import Agent, Config
 from .tmux import Host, HostError, MissingDirectory, Session
 
@@ -45,8 +45,15 @@ class FilterInput(Input):
         Binding("pagedown", "app.cursor(10)", show=False),
         Binding("enter", "app.attach", "attach"),
         Binding("ctrl+x", "app.kill", "kill/forget"),
+        Binding("ctrl+e", "app.edit", "editor"),
         Binding("escape", "app.escape", "clear/quit"),
     ]
+
+
+class EditorFilterInput(FilterInput):
+    """Filter box for `mh code`: enter opens the editor instead of attaching."""
+
+    BINDINGS = [Binding("enter", "app.attach", "open in editor")]
 
 
 class ConfirmScreen(ModalScreen[bool]):
@@ -147,8 +154,9 @@ class MuxherdApp(App[Session | None]):
         Binding("ctrl+c", "quit", show=False, priority=True),
     ]
 
-    def __init__(self, config: Config, initial_filter: str = "") -> None:
+    def __init__(self, config: Config, initial_filter: str = "", editor_mode: bool = False) -> None:
         super().__init__()
+        self.editor_mode = editor_mode  # enter opens the editor and exits (`mh code`)
         self.config = config
         self.hosts = [Host(name, target) for name, target in config.hosts.items()]
         self.sessions: list[Session] = []
@@ -160,7 +168,8 @@ class MuxherdApp(App[Session | None]):
 
     def compose(self) -> ComposeResult:
         yield Static("loading…", id="status")
-        yield FilterInput(self.initial_filter, placeholder="type to filter sessions…", id="filter")
+        filter_cls = EditorFilterInput if self.editor_mode else FilterInput
+        yield filter_cls(self.initial_filter, placeholder="type to filter sessions…", id="filter")
         table = DataTable(id="table", cursor_type="row", zebra_stripes=False)
         table.can_focus = False
         yield table
@@ -310,6 +319,10 @@ class MuxherdApp(App[Session | None]):
         session = self.selected
         if session is None:
             return
+        if self.editor_mode:
+            if self._open_editor(session):
+                self.exit(None)
+            return
         if session.live:
             self.exit(session)
         else:
@@ -332,6 +345,19 @@ class MuxherdApp(App[Session | None]):
             self.call_from_thread(self.notify, str(e), severity="error", timeout=8)
             return
         self.call_from_thread(self.exit, reopened)
+
+    def action_edit(self) -> None:
+        if self.selected:
+            self._open_editor(self.selected)
+
+    def _open_editor(self, session: Session) -> bool:
+        try:
+            argv = editor.open_editor(session, self.config.editor)
+        except HostError as e:
+            self.notify(str(e), severity="error", timeout=8)
+            return False
+        self.notify(f"opening {tmux.short_path(argv[-1])} on {session.host.name}")
+        return True
 
     def action_toggle_closed(self) -> None:
         self.show_closed = not self.show_closed

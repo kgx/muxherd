@@ -11,11 +11,12 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Input, Label, OptionList, Select, Static
+from textual.widgets import Checkbox, DataTable, Footer, Input, Label, OptionList, Select, Static
 from textual.worker import get_current_worker
 
+from . import config as config_mod
 from . import editor, tmux
-from .config import Agent, Config
+from .config import UI, Agent, Config
 from .tmux import Host, HostError, MissingDirectory, Session
 
 REFRESH_SECONDS = 2.0
@@ -360,6 +361,67 @@ class RenameScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class SettingsScreen(ModalScreen[UI | None]):
+    """Picker settings, saved to the [ui] table of the config file."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel"),
+        Binding("ctrl+s", "save", "save", priority=True),
+    ]
+
+    def __init__(self, ui: UI) -> None:
+        super().__init__()
+        self.ui = ui
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Label("[b]Settings[/b]", classes="title")
+            yield Label("sort: live sessions first, closed ones below, each group")
+            options = [(desc, mode) for mode, desc in config_mod.SORT_MODES.items()]
+            yield Select(options, value=self.ui.sort, allow_blank=False, compact=True, id="sort")
+            yield Label("at startup")
+            yield Checkbox("show closed sessions", self.ui.show_closed, compact=True, id="opt-show-closed")
+            yield Checkbox("show the preview pane", self.ui.preview, compact=True, id="opt-preview")
+            yield Label(f"saved to {tmux.short_path(str(config_mod.CONFIG_PATH))} [ui]", classes="hint", markup=False)
+            keys = "[b]ctrl+s[/b] save   [b]tab[/b] next   [b]space[/b] toggle   [b]esc[/b] cancel"
+            yield Label(keys, classes="hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#sort", Select).focus()
+
+    def action_save(self) -> None:
+        self.dismiss(
+            UI(
+                sort=str(self.query_one("#sort", Select).value),
+                show_closed=self.query_one("#opt-show-closed", Checkbox).value,
+                preview=self.query_one("#opt-preview", Checkbox).value,
+            )
+        )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+def row_cells(s: Session, now: float) -> tuple:
+    if s.live:
+        return (
+            Text("●", style="green") if s.attached else Text("○", style="dim"),
+            Text(s.host.name, style="cyan"),
+            Text(s.name, style="bold"),
+            Text(s.agent),
+            Text(tmux.ago(s.activity, now)),
+            Text(tmux.short_path(tmux.project_dir(s)), style="dim"),
+        )
+    return (
+        Text("✕", style="red dim"),
+        Text(s.host.name, style="dim"),
+        Text(s.name, style="dim"),
+        Text(s.agent, style="dim"),
+        Text(tmux.ago(s.closed_at, now), style="dim"),
+        Text(tmux.short_path(s.directory), style="dim"),
+    )
+
+
 class MuxherdApp(App[Session | None]):
     TITLE = "muxherd"
     ENABLE_COMMAND_PALETTE = False
@@ -375,7 +437,8 @@ class MuxherdApp(App[Session | None]):
     .dialog Label { margin-top: 1; color: $text-muted; }
     .dialog .title { margin-top: 0; color: $text; }
     .dialog .hint { color: $text-muted; }
-    ConfirmScreen, NewSessionScreen, ChangeDirScreen, RenameScreen { align: center middle; }
+    ConfirmScreen, NewSessionScreen, ChangeDirScreen, RenameScreen, SettingsScreen { align: center middle; }
+    SettingsScreen Checkbox { height: 1; margin-top: 0; background: transparent; }
     #suggest { height: auto; max-height: 8; margin-top: 0; background: $boost; }
     """
     BINDINGS = [
@@ -383,6 +446,7 @@ class MuxherdApp(App[Session | None]):
         Binding("ctrl+t", "toggle_closed", "closed"),
         Binding("f5", "refresh", "refresh", show=False),
         Binding("ctrl+p", "toggle_preview", "preview"),
+        Binding("ctrl+s", "settings", "settings"),
         Binding("escape", "escape", "quit", show=False),
         Binding("ctrl+c", "quit", show=False, priority=True),
     ]
@@ -397,7 +461,14 @@ class MuxherdApp(App[Session | None]):
         self.shown: list[Session] = []
         self.errors: dict[str, str] = {}
         self.loaded = False
-        self.show_closed = True
+        self.show_closed = config.ui.show_closed
+        # What's on screen, so refreshes only touch what changed (redrawing everything
+        # every couple of seconds flickers on long lists).
+        self.row_keys: list[str] = []
+        self.row_cells: list[tuple] = []
+        self.col_keys: list = []
+        self.shown_status: Text | None = None
+        self.shown_preview: tuple[str, Text] | None = None
         self.focus_key: str | None = None  # select this row on the next render (e.g. after rename)
         self.initial_filter = initial_filter
 
@@ -412,7 +483,8 @@ class MuxherdApp(App[Session | None]):
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
-        table.add_columns("", "host", "session", "agent", "idle", "dir")
+        self.col_keys = table.add_columns("", "host", "session", "agent", "idle", "dir")
+        self.query_one("#preview", Static).display = self.config.ui.preview
         self.query_one(FilterInput).focus()
         self.action_refresh()
         self.set_interval(REFRESH_SECONDS, self.action_refresh)
@@ -442,34 +514,29 @@ class MuxherdApp(App[Session | None]):
         table = self.query_one(DataTable)
         current = self.focus_key or (self.selected.key if self.selected else None)
         query = self.query_one(FilterInput).value
-        self.shown = [s for s in self.sessions if (s.live or self.show_closed) and matches(s, query)]
+        visible = [s for s in self.sessions if (s.live or self.show_closed) and matches(s, query)]
+        self.shown = tmux.sort_sessions(visible, self.config.ui.sort)
         now = time.time()
-        table.clear()
-        for s in self.shown:
-            if s.live:
-                row = (
-                    Text("●", style="green") if s.attached else Text("○", style="dim"),
-                    Text(s.host.name, style="cyan"),
-                    Text(s.name, style="bold"),
-                    s.agent,
-                    tmux.ago(s.activity, now),
-                    Text(tmux.short_path(tmux.project_dir(s)), style="dim"),
-                )
-            else:
-                row = (
-                    Text("✕", style="red dim"),
-                    Text(s.host.name, style="dim"),
-                    Text(s.name, style="dim"),
-                    Text(s.agent, style="dim"),
-                    Text(tmux.ago(s.closed_at, now), style="dim"),
-                    Text(tmux.short_path(s.directory), style="dim"),
-                )
-            table.add_row(*row, key=s.key)
         keys = [s.key for s in self.shown]
+        cells = [row_cells(s, now) for s in self.shown]
+
+        if keys == self.row_keys:
+            # Same rows in the same order: update only the cells that changed.
+            for key, new, old in zip(keys, cells, self.row_cells, strict=True):
+                for col, value, before in zip(self.col_keys, new, old, strict=True):
+                    if value != before:
+                        table.update_cell(key, col, value)
+        else:
+            table.clear()
+            for key, row in zip(keys, cells, strict=True):
+                table.add_row(*row, key=key)
+        self.row_keys, self.row_cells = keys, cells
+
         if current in keys:
             self.focus_key = None
-            table.move_cursor(row=keys.index(current), animate=False)
-        elif self.shown:
+            if table.cursor_row != keys.index(current):
+                table.move_cursor(row=keys.index(current), animate=False)
+        elif self.shown and table.cursor_row != 0:
             table.move_cursor(row=0, animate=False)
 
     def _render_status(self) -> None:
@@ -484,7 +551,10 @@ class MuxherdApp(App[Session | None]):
             parts.append(Text(f" {h.name} {'✓' if ok else '✗'}", style="green" if ok else "red"))
         if self.errors:
             parts.append(Text("   " + "; ".join(self.errors.values()), style="red dim"))
-        self.query_one("#status", Static).update(Text.assemble(*parts))
+        status = Text.assemble(*parts)
+        if status != self.shown_status:
+            self.shown_status = status
+            self.query_one("#status", Static).update(status)
 
     def _load_preview(self) -> None:
         preview = self.query_one("#preview", Static)
@@ -492,7 +562,7 @@ class MuxherdApp(App[Session | None]):
             return
         session = self.selected
         if session is None:
-            preview.update(Text("no sessions — ctrl+n to start one" if self.loaded else "", style="dim"))
+            self._show_preview("", Text("no sessions — ctrl+n to start one" if self.loaded else "", style="dim"))
             return
         self._fetch_preview(session, max(preview.size.height, 5))
 
@@ -534,7 +604,10 @@ class MuxherdApp(App[Session | None]):
         )
 
     def _show_preview(self, key: str, text: Text) -> None:
-        if self.selected and self.selected.key == key:
+        if key and not (self.selected and self.selected.key == key):
+            return  # selection moved on while this was loading
+        if (key, text) != self.shown_preview:
+            self.shown_preview = (key, text)
             self.query_one("#preview", Static).update(text)
 
     # ----- events & actions -----
@@ -630,6 +703,25 @@ class MuxherdApp(App[Session | None]):
             f.value = ""
         else:
             self.exit(None)
+
+    def action_settings(self) -> None:
+        def done(ui: UI | None) -> None:
+            if ui is None:
+                return
+            sort_changed = ui.sort != self.config.ui.sort
+            self.config.ui = ui
+            try:
+                config_mod.save_ui(ui)
+            except OSError as e:
+                self.notify(f"couldn't save settings: {e}", severity="error")
+            self.show_closed = ui.show_closed
+            self.query_one("#preview", Static).display = ui.preview
+            self._render_table()
+            self._render_status()
+            self._load_preview()
+            self.notify("settings saved" + (f" · sorted {config_mod.SORT_MODES[ui.sort]}" if sort_changed else ""))
+
+        self.push_screen(SettingsScreen(self.config.ui), done)
 
     def action_toggle_preview(self) -> None:
         preview = self.query_one("#preview", Static)

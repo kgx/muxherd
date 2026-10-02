@@ -233,9 +233,15 @@ def list_all(hosts: list[Host]) -> tuple[list[Session], dict[str, str]]:
                 sessions.extend(fut.result())
             except HostError as e:
                 errors[name] = str(e)
-    # Live sessions first, then closed ones, most recently closed first.
-    sessions.sort(key=lambda s: (0, s.host.name, s.name, 0) if s.live else (1, "", "", -s.closed_at))
-    return sessions, errors
+    return sort_sessions(sessions, "name"), errors
+
+
+def sort_sessions(sessions: list[Session], mode: str = "name") -> list[Session]:
+    """Live sessions first, closed ones below; within each group alphabetical by session
+    name ("name") or most recently used first ("recent")."""
+    if mode == "recent":
+        return sorted(sessions, key=lambda s: (not s.live, -(s.activity if s.live else s.closed_at), s.name))
+    return sorted(sessions, key=lambda s: (not s.live, s.name.lower(), s.host.name))
 
 
 def capture(session: Session, lines: int = 200) -> str:

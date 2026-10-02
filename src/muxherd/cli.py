@@ -98,10 +98,17 @@ def main_callback(
 def ls(
     host: Annotated[str | None, typer.Option("--host", "-H", help="Only this host.")] = None,
     live: Annotated[bool, typer.Option("--live", "-l", help="Hide closed sessions.")] = False,
+    sort: Annotated[
+        str | None, typer.Option("--sort", "-s", help="name or recent (default: [ui] sort in the config).")
+    ] = None,
 ) -> None:
-    """List sessions on all configured hosts (closed ones marked ✕)."""
+    """List sessions on all configured hosts: live first, then closed (marked ✕)."""
     cfg = config.load()
+    if sort and sort not in config.SORT_MODES:
+        err.print(f"[red]unknown sort {sort!r}[/red] (use: {', '.join(config.SORT_MODES)})")
+        raise typer.Exit(2)
     sessions, errors = tmux.list_all(_hosts(cfg, host))
+    sessions = tmux.sort_sessions(sessions, sort or cfg.ui.sort)
     if live:
         sessions = [s for s in sessions if s.live]
     _report_errors(errors)

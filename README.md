@@ -93,7 +93,7 @@ mh code infra            # open the session's directory in VS Code (no name: pic
 mh sh infra              # throwaway shell (own tmux session) in the session's project dir
 mh new -a codex          # new codex session in cwd, named codex-<dir>, then attach
 mh new api -a claude -H devbox -d ~/src/api -D   # create detached on a host
-mh ls                    # list everything, closed sessions marked ✕ (--live to hide them)
+mh ls                    # live sessions, then closed ones (✕); --live, --sort name|recent
 mh kill devbox:api    # kill (asks first; -y to skip); it stays listed as closed
 mh forget api            # remove a closed session from the registry
 mh rename api api-v2     # rename (live or closed; host:name works too)
@@ -118,6 +118,7 @@ mh doctor --clipboard    # also test copy → your local clipboard through the r
 | ctrl+e         | open the session's directory in your editor                |
 | ctrl+o         | throwaway shell (own tmux session) in the project directory |
 | ctrl+p         | toggle preview pane                                        |
+| ctrl+s         | settings: sort order, closed sessions and preview at startup |
 | F5             | refresh now (it also refreshes every 2s)                   |
 | esc            | clear filter, then quit                                    |
 
@@ -254,6 +255,11 @@ devbox = "local"        # this machine
 [editor]                   # {path} = project dir, {host} = ssh target, {uri} = VS Code URI
 local = "code -n {path}"
 remote = "code -n --folder-uri {uri}"
+
+[ui]                       # also editable in the picker: ctrl+s
+sort = "name"              # or "recent"; live sessions are always listed first
+show_closed = true         # list closed sessions (ctrl+t toggles for the current run)
+preview = true             # show the preview pane (ctrl+p toggles for the current run)
 
 [agents.claude]
 start = "claude --session-id {id}"   # typed into the new session's shell
